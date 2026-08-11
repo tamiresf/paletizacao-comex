@@ -1,6 +1,0 @@
-streamlit
-pandas
-numpy
-plotly
-fpdf2
-openpyxl
