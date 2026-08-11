@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 st.title("📦 Sistema de Paletização e Visualização 3D")
-st.caption("Automação de montagem de pallets fechados, consolidação de mistos e renderização 3D.")
+st.caption("Automação de montagem de pallets fechados, consolidação de mistos por capacidade e renderização 3D.")
 
 # --- CARREGAR BASE ---
 @st.cache_data
@@ -21,6 +21,14 @@ def carregar_base(caminho_excel):
     df = pd.read_excel(caminho_excel)
     df.columns = df.columns.str.strip()
     df['SKU'] = df['SKU'].astype(str).str.strip()
+    # Mapeamento do tamanho numérico das caixas para ordenação (maior -> menor)
+    def extrair_num_caixa(val):
+        try:
+            val_str = str(val).upper().replace("CAIXA", "").strip()
+            return int(val_str)
+        except:
+            return 0
+    df['Ordem_Caixa'] = df['NUMERO DA CAIXA'].apply(extrair_num_caixa)
     return df
 
 CAMINHO_EXCEL = "COMEX.xlsx"
@@ -108,12 +116,14 @@ def processar_pallets_detalhado(carrinho, df_produtos):
     pallet_id = 1
     sobras_para_misto = []
 
+    # 1. Gerar Pallets Fechados e separar as sobras
     for item in carrinho:
         sku = str(item['SKU']).strip()
         qtd = int(item['Qtd_Caixas'])
         
         prod = df_produtos[df_produtos['SKU'] == sku].iloc[0]
         cap_pallet = int(prod['QUANTIDADE DE CAIXAS NO PALLET'])
+        ordem_cx = int(prod['Ordem_Caixa'])
         
         qtd_pallets_fechados = qtd // cap_pallet
         resto = qtd % cap_pallet
@@ -125,7 +135,9 @@ def processar_pallets_detalhado(carrinho, df_produtos):
                 'SKU': sku,
                 'Produto': prod['NOME DO PRODUTO'],
                 'Qtd Caixas': cap_pallet,
-                'Nº Caixa': prod['NUMERO DA CAIXA']
+                'Nº Caixa': prod['NUMERO DA CAIXA'],
+                'Ordem_Caixa': ordem_cx,
+                'Capacidade_Max': cap_pallet
             })
             pallet_id += 1
 
@@ -134,20 +146,65 @@ def processar_pallets_detalhado(carrinho, df_produtos):
                 'SKU': sku,
                 'Produto': prod['NOME DO PRODUTO'],
                 'Qtd Caixas': resto,
-                'Nº Caixa': prod['NUMERO DA CAIXA']
+                'Nº Caixa': prod['NUMERO DA CAIXA'],
+                'Ordem_Caixa': ordem_cx,
+                'Capacidade_Max': cap_pallet
             })
 
+    # 2. Processar Sobras em Pallets Mistos (com ordenação de caixas maiores na base e limite de capacidade)
     if sobras_para_misto:
-        df_sobras = pd.DataFrame(sobras_para_misto).sort_values(by='Nº Caixa')
+        # Ordena as sobras da MAIOR caixa para a MENOR caixa (Caixa 3 -> Caixa 2 -> Caixa 1 -> Caixa 0)
+        df_sobras = pd.DataFrame(sobras_para_misto).sort_values(by='Ordem_Caixa', ascending=False)
+        
+        misto_atual_id = f"Pallet {pallet_id} (Misto)"
+        ocupacao_atual = 0.0  # Ocupação em fração de 0.0 a 1.0 (0% a 100%)
+
         for _, row in df_sobras.iterrows():
-            pallets_lista.append({
-                'ID': f"Pallet {pallet_id} (Misto)",
-                'Tipo': "Misto 🟡",
-                'SKU': row['SKU'],
-                'Produto': row['Produto'],
-                'Qtd Caixas': row['Qtd Caixas'],
-                'Nº Caixa': row['Nº Caixa']
-            })
+            sku = row['SKU']
+            prod_nome = row['Produto']
+            num_caixa = row['Nº Caixa']
+            qtd_restante = row['Qtd Caixas']
+            cap_max = row['Capacidade_Max']
+            ordem_cx = row['Ordem_Caixa']
+
+            # Custo de 1 caixa em % do pallet
+            custo_unitario = 1.0 / cap_max
+
+            while qtd_restante > 0:
+                # Quanto ainda cabe no pallet atual em termos de caixas desse SKU
+                espaco_disponivel_pct = 1.0 - ocupacao_atual
+                
+                # Se o pallet atual já estiver 99.9% cheio, cria um novo pallet misto
+                if espaco_disponivel_pct <= 0.001:
+                    pallet_id += 1
+                    misto_atual_id = f"Pallet {pallet_id} (Misto)"
+                    ocupacao_atual = 0.0
+                    espaco_disponivel_pct = 1.0
+
+                caixas_que_cabem = int(np.floor(espaco_disponivel_pct / custo_unitario))
+
+                if caixas_que_cabem == 0:
+                    # Não cabe nem 1 caixa desse SKU no pallet atual -> abre novo pallet
+                    pallet_id += 1
+                    misto_atual_id = f"Pallet {pallet_id} (Misto)"
+                    ocupacao_atual = 0.0
+                    caixas_que_cabem = int(np.floor(1.0 / custo_unitario))
+
+                qtd_alocar = min(qtd_restante, caixas_que_cabem)
+                
+                pallets_lista.append({
+                    'ID': misto_atual_id,
+                    'Tipo': "Misto 🟡",
+                    'SKU': sku,
+                    'Produto': prod_nome,
+                    'Qtd Caixas': qtd_alocar,
+                    'Nº Caixa': num_caixa,
+                    'Ordem_Caixa': ordem_cx,
+                    'Capacidade_Max': cap_max
+                })
+
+                ocupacao_atual += qtd_alocar * custo_unitario
+                qtd_restante -= qtd_alocar
 
     return pd.DataFrame(pallets_lista)
 
@@ -232,7 +289,6 @@ def gerar_pdf(df_pallets):
 
         pdf.set_font("Helvetica", size=10)
         for _, row in df_p.iterrows():
-            # Trata acentuação para padrão Latin-1
             prod_nome = str(row['Produto']).encode('latin-1', 'replace').decode('latin-1')[:40]
             pdf.cell(35, 6, str(row['SKU']), border=1)
             pdf.cell(95, 6, prod_nome, border=1)
@@ -242,7 +298,6 @@ def gerar_pdf(df_pallets):
         
         pdf.ln(5)
 
-    # Retorna diretamente como bytes sem aplicar .encode()
     return bytes(pdf.output())
 
 # --- BOTÃO DE PROCESSAMENTO ---
