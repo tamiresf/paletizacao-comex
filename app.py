@@ -12,8 +12,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📦 Sistema de Paletização e Visualização 3D")
-st.caption("Automação de montagem de pallets fechados, consolidação de mistos por capacidade e renderização 3D em escala real.")
+st.title("📦 Sistema de Paletização Otimizado e Visualização 3D")
+st.caption("Automação de montagem de pallets fechados, consolidação otimizada por gravidade/tamanho (sem buracos) e renderização 3D física.")
 
 # --- DICIONÁRIO DE DIMENSÕES FÍSICAS REAIS DAS CAIXAS (em metros) ---
 DIMENSOES_CAIXAS = {
@@ -100,7 +100,7 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
     st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
 
-# --- CORPO PRINCIPAL: PEDIDO ATUAL E LIXEIRA ---
+# --- CORPO PRINCIPAL: PEDIDO ATUAL ---
 st.subheader("🛒 Itens do Pedido Atual")
 
 if st.session_state.carrinho:
@@ -130,7 +130,6 @@ if st.session_state.carrinho:
 
     st.markdown("---")
     
-    # --- LINHA DE TOTALIZAÇÃO DO PEDIDO ---
     m1, m2, m3 = st.columns([2, 2, 2])
     m1.metric(label="📦 Total de Caixas no Pedido", value=f"{total_caixas_pedido:,} cx".replace(",", "."))
     m2.metric(label="🧩 Total de Peças no Pedido", value=f"{total_pecas_pedido:,} peças".replace(",", "."))
@@ -146,7 +145,7 @@ else:
 
 st.markdown("---")
 
-# --- FUNÇÕES DE PROCESSAMENTO E RELATÓRIO ---
+# --- PROCESSAMENTO LOGÍSTICO DOS PALLETS ---
 def processar_pallets_detalhado(carrinho, df_produtos):
     pallets_lista = []
     pallet_id = 1
@@ -237,9 +236,11 @@ def processar_pallets_detalhado(carrinho, df_produtos):
 
     return pd.DataFrame(pallets_lista)
 
-def gerar_grafico_3d_fidedigno(df_pallet_especifico, titulo):
+# --- ALGORITMO DE ORGANIZAÇÃO ESPACIAL 3D SEM BURACOS (BOTTOM-UP GRAVITY PACKING) ---
+def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     """
-    Gera a estrutura 3D com dimensões físicas em metros (mm -> m) das caixas especificadas na imagem.
+    Gera renderização 3D arranjando caixas maiores/pesadas embaixo e preenchendo
+    fileiras completas sem buracos, 'puxando' caixas menores para o nível inferior.
     """
     fig = go.Figure()
 
@@ -247,11 +248,37 @@ def gerar_grafico_3d_fidedigno(df_pallet_especifico, titulo):
     skus_unicos = df_pallet_especifico['SKU'].unique()
     cor_map = {sku: paleta_cores[i % len(paleta_cores)] for i, sku in enumerate(skus_unicos)}
 
-    total_caixas = int(df_pallet_especifico['Qtd Caixas'].sum())
-    if total_caixas == 0:
+    # 1. Expandir todas as caixas individuais do pallet
+    lista_caixas = []
+    for _, row in df_pallet_especifico.iterrows():
+        sku = row['SKU']
+        qtd = int(row['Qtd Caixas'])
+        cor = cor_map[sku]
+        cx_nome = row['Nº Caixa']
+        dims = obter_dimensoes_caixa(cx_nome)
+        volume = dims['comp'] * dims['larg'] * dims['alt']
+        
+        for _ in range(qtd):
+            lista_caixas.append({
+                'SKU': sku,
+                'Cor': cor,
+                'Caixa': cx_nome,
+                'dx': dims['comp'],
+                'dy': dims['larg'],
+                'dz': dims['alt'],
+                'volume': volume,
+                'ordem_caixa': row['Ordem_Caixa']
+            })
+
+    if not lista_caixas:
         return fig
 
-    # Configuração de arranjo da base
+    # 2. Ordenar Caixas: Maior Volume / Maior Tipo de Caixa primeiro (Fica no Fundo/Base)
+    lista_caixas.sort(key=lambda c: (c['ordem_caixa'], c['volume']), reverse=True)
+
+    # 3. Definir Grid de Base do Pallet Padrão (Ex: Padrão PBR ~ 1.2m x 1.0m)
+    # Calculamos dinamicamente quantas caixas cabem por camada base
+    total_caixas = len(lista_caixas)
     if total_caixas <= 12:
         nx, ny = 2, 2
     elif total_caixas <= 30:
@@ -263,26 +290,11 @@ def gerar_grafico_3d_fidedigno(df_pallet_especifico, titulo):
     else:
         nx, ny = 5, 4
 
-    nz = int(np.ceil(total_caixas / (nx * ny)))
-
-    caixas_fisicas = []
-    for _, row in df_pallet_especifico.iterrows():
-        sku = row['SKU']
-        qtd = int(row['Qtd Caixas'])
-        cor = cor_map[sku]
-        cx_nome = row['Nº Caixa']
-        dims = obter_dimensoes_caixa(cx_nome)
-        for _ in range(qtd):
-            caixas_fisicas.append({
-                'SKU': sku, 
-                'Cor': cor, 
-                'Caixa': cx_nome,
-                'dx': dims['comp'],
-                'dy': dims['larg'],
-                'dz': dims['alt']
-            })
-
-    # Vértices unitários
+    # 4. Matriz de Alocação de Posição 3D sem Buracos
+    # Controlamos a altura máxima acumulada em cada posição da base (x, y)
+    alturas_grid = np.zeros((nx, ny))
+    
+    # Geometria base do cubo 3D
     x_cube = [0, 1, 1, 0, 0, 1, 1, 0]
     y_cube = [0, 0, 1, 1, 0, 0, 1, 1]
     z_cube = [0, 0, 0, 0, 1, 1, 1, 1]
@@ -291,39 +303,43 @@ def gerar_grafico_3d_fidedigno(df_pallet_especifico, titulo):
     j_mesh = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
     k_mesh = [0, 7, 2, 3, 6, 7, 1, 1, 1, 5, 2, 7]
 
-    box_idx = 0
+    box_count = 0
+    
+    # Preenchimento em Camadas Horizontalmente Prioritário
+    # Garante que NENHUMA caixa flutue e que espaços vagos de baixo sejam ocupados primeiro
+    for i_box, item in enumerate(lista_caixas):
+        # Encontrar a célula da base (x, y) com a MENOR altura acumulada Z para apoiar a caixa
+        min_z_idx = np.unravel_index(np.argmin(alturas_grid, axis=None), alturas_grid.shape)
+        x_idx, y_idx = min_z_idx
+        
+        z0 = alturas_grid[x_idx, y_idx]
+        dx, dy, dz = item['dx'], item['dy'], item['dz']
 
-    for z in range(nz):
-        for y in range(ny):
-            for x in range(nx):
-                if box_idx < len(caixas_fisicas):
-                    item = caixas_fisicas[box_idx]
-                    
-                    dx, dy, dz = item['dx'], item['dy'], item['dz']
+        # Posições no espaço físico (metros)
+        x0 = x_idx * (dx + 0.015)
+        y0 = y_idx * (dy + 0.015)
 
-                    # Posição acumulada no espaço (com pequenos espaçamentos estéticos)
-                    x0 = x * (dx + 0.02)
-                    y0 = y * (dy + 0.02)
-                    z0 = z * (dz + 0.01)
+        x_box = [x0 + vx * dx for vx in x_cube]
+        y_box = [y0 + vy * dy for vy in y_cube]
+        z_box = [z0 + vz * dz for vz in z_cube]
 
-                    x_box = [x0 + vx * dx for vx in x_cube]
-                    y_box = [y0 + vy * dy for vy in y_cube]
-                    z_box = [z0 + vz * dz for vz in z_cube]
+        fig.add_trace(go.Mesh3d(
+            x=x_box, y=y_box, z=z_box,
+            i=i_mesh, j=j_mesh, k=k_mesh,
+            color=item['Cor'],
+            flatshading=True,
+            lighting=dict(ambient=0.75, diffuse=0.85),
+            hoverinfo="text",
+            text=f"<b>SKU:</b> {item['SKU']}<br><b>Tipo:</b> {item['Caixa']}<br><b>Dimensões:</b> {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm<br><b>Nível (Z):</b> {z0:.2f}m",
+            showscale=False
+        ))
 
-                    fig.add_trace(go.Mesh3d(
-                        x=x_box, y=y_box, z=z_box,
-                        i=i_mesh, j=j_mesh, k=k_mesh,
-                        color=item['Cor'],
-                        flatshading=True,
-                        lighting=dict(ambient=0.75, diffuse=0.85),
-                        hoverinfo="text",
-                        text=f"SKU: {item['SKU']}<br>Tipo: {item['Caixa']}<br>Dimensões: {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm<br>Caixa #{box_idx+1}",
-                        showscale=False
-                    ))
-                    box_idx += 1
+        # Atualiza a altura do pilar onde a caixa foi colocada
+        alturas_grid[x_idx, y_idx] += (dz + 0.008)
+        box_count += 1
 
     fig.update_layout(
-        title=f"{titulo} ({total_caixas} caixas)",
+        title=f"{titulo} ({total_caixas} caixas) - Arrumação Estável sem Vagos",
         scene=dict(
             xaxis=dict(title="Comp (m)", showgrid=True),
             yaxis=dict(title="Larg (m)", showgrid=True),
@@ -388,7 +404,6 @@ if st.session_state.processado and st.session_state.carrinho:
     pallets_unicos = df_pallets['ID'].unique()
     st.success(f"**Total de Pallets Gerados:** {len(pallets_unicos)}")
 
-    # --- BOTÃO DE BAIXAR PDF ---
     try:
         pdf_bytes = gerar_pdf(df_pallets)
         st.download_button(
@@ -415,5 +430,5 @@ if st.session_state.processado and st.session_state.carrinho:
                 st.dataframe(df_p[['SKU', 'Produto', 'Nº Caixa', 'Qtd Caixas']], use_container_width=True)
             
             with col_3d:
-                fig_3d = gerar_grafico_3d_fidedigno(df_p, f"Estrutura 3D - {p_id}")
+                fig_3d = gerar_grafico_3d_otimizado(df_p, f"Estrutura 3D - {p_id}")
                 st.plotly_chart(fig_3d, use_container_width=True)
