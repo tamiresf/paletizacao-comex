@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 st.title("📦 Sistema de Paletização e Visualização 3D - Pallet Fumigado (0.75m x 1.20m)")
-st.caption("Automação de montagem de pallets com amarração física por lastros planos sem buracos.")
+st.caption("Alocação contínua de SKUs em pallets adjacentes para otimização do picking.")
 
 # --- DICIONÁRIO DE DIMENSÕES FÍSICAS REAIS DAS CAIXAS (em metros) ---
 DIMENSOES_CAIXAS = {
@@ -23,21 +23,14 @@ DIMENSOES_CAIXAS = {
     "CAIXA 3": {"comp": 0.375, "larg": 0.195, "alt": 0.145},
 }
 
-# --- DIMENSÕES FÍSICAS DO PALLET DE MADEIRA FUMIGADO ---
 PALLET_COMP = 1.20  # 1200 mm
 PALLET_LARG = 0.75  # 750 mm
 
 def obter_dimensoes_caixa(num_caixa):
-    """Retorna comprimento, largura e altura em metros baseado na identificação da caixa."""
     num_str = str(num_caixa).upper().strip()
-    if "CAIXA" not in num_str:
-        key = f"CAIXA {num_str}"
-    else:
-        key = num_str
-    
+    key = f"CAIXA {num_str}" if "CAIXA" not in num_str else num_str
     return DIMENSOES_CAIXAS.get(key, {"comp": 0.300, "larg": 0.200, "alt": 0.150})
 
-# --- CARREGAR BASE ---
 @st.cache_data
 def carregar_base(caminho_excel):
     df = pd.read_excel(caminho_excel)
@@ -45,8 +38,7 @@ def carregar_base(caminho_excel):
     df['SKU'] = df['SKU'].astype(str).str.strip()
     def extrair_num_caixa(val):
         try:
-            val_str = str(val).upper().replace("CAIXA", "").strip()
-            return int(val_str)
+            return int(str(val).upper().replace("CAIXA", "").strip())
         except:
             return 0
     df['Ordem_Caixa'] = df['NUMERO DA CAIXA'].apply(extrair_num_caixa)
@@ -62,7 +54,6 @@ except Exception as e:
     st.error(f"Erro ao carregar a planilha COMEX.xlsx: {e}")
     st.stop()
 
-# --- SESSÃO DO PEDIDO E PROCESSAMENTO ---
 if 'carrinho' not in st.session_state:
     st.session_state.carrinho = []
 
@@ -105,7 +96,7 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
     st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
 
-# --- CORPO PRINCIPAL: PEDIDO ATUAL ---
+# --- CORPO PRINCIPAL ---
 st.subheader("🛒 Itens do Pedido Atual")
 
 if st.session_state.carrinho:
@@ -121,7 +112,6 @@ if st.session_state.carrinho:
         total_pecas_pedido += total_pecas_item
 
         c1, c2, c3, c4, c5, c6 = st.columns([1.5, 3, 1.2, 1.3, 1.5, 0.8])
-        
         c1.write(f"**SKU:** {item['SKU']}")
         c2.write(f"**Produto:** {item['Produto']}")
         c3.write(f"**Caixa Nº:** {item['Nº Caixa']}")
@@ -134,7 +124,6 @@ if st.session_state.carrinho:
             st.rerun()
 
     st.markdown("---")
-    
     m1, m2, m3 = st.columns([2, 2, 2])
     m1.metric(label="📦 Total de Caixas no Pedido", value=f"{total_caixas_pedido:,} cx".replace(",", "."))
     m2.metric(label="🧩 Total de Peças no Pedido", value=f"{total_pecas_pedido:,} peças".replace(",", "."))
@@ -150,98 +139,94 @@ else:
 
 st.markdown("---")
 
-# --- PROCESSAMENTO LOGÍSTICO DOS PALLETS ---
+# --- LÓGICA DE ALOCAÇÃO SEQUENCIAL DE SKU E CONEXÃO PRÓXIMA ---
 def processar_pallets_detalhado(carrinho, df_produtos):
     pallets_lista = []
     pallet_id = 1
-    sobras_para_misto = []
+    
+    # Lista de acompanhamento de espaço livre nos pallets abertos
+    # Estrutura: [{'id': str, 'tipo': str, 'espaco_livre_pct': float, 'skus': list}]
+    pallets_abertos = []
 
+    # 1. Processar cada SKU individualmente e mantê-los juntos do início ao fim
     for item in carrinho:
         sku = str(item['SKU']).strip()
-        qtd = int(item['Qtd_Caixas'])
+        qtd_restante = int(item['Qtd_Caixas'])
         
         prod = df_produtos[df_produtos['SKU'] == sku].iloc[0]
         cap_pallet = int(prod['QUANTIDADE DE CAIXAS NO PALLET'])
         ordem_cx = int(prod['Ordem_Caixa'])
-        
-        qtd_pallets_fechados = qtd // cap_pallet
-        resto = qtd % cap_pallet
+        custo_unitario = 1.0 / cap_pallet
 
-        for _ in range(qtd_pallets_fechados):
-            pallets_lista.append({
-                'ID': f"Pallet {pallet_id}",
-                'Tipo': "Fechado 🟢",
-                'SKU': sku,
-                'Produto': prod['NOME DO PRODUTO'],
-                'Qtd Caixas': cap_pallet,
-                'Nº Caixa': prod['NUMERO DA CAIXA'],
-                'Ordem_Caixa': ordem_cx,
-                'Capacidade_Max': cap_pallet
-            })
-            pallet_id += 1
+        # Primeiro, tenta encaixar o SKU no pallet misto mais RECENTE (mais próximo) que tenha espaço suficiente
+        if pallets_abertos and qtd_restante > 0:
+            ultimo_pallet = pallets_abertos[-1]
+            espaco_disp = ultimo_pallet['espaco_livre_pct']
+            caixas_cabem = int(np.floor(espaco_disp / custo_unitario))
 
-        if resto > 0:
-            sobras_para_misto.append({
-                'SKU': sku,
-                'Produto': prod['NOME DO PRODUTO'],
-                'Qtd Caixas': resto,
-                'Nº Caixa': prod['NUMERO DA CAIXA'],
-                'Ordem_Caixa': ordem_cx,
-                'Capacidade_Max': cap_pallet
-            })
-
-    if sobras_para_misto:
-        df_sobras = pd.DataFrame(sobras_para_misto).sort_values(by='Ordem_Caixa', ascending=False)
-        
-        misto_atual_id = f"Pallet {pallet_id} (Misto)"
-        ocupacao_atual = 0.0
-
-        for _, row in df_sobras.iterrows():
-            sku = row['SKU']
-            prod_nome = row['Produto']
-            num_caixa = row['Nº Caixa']
-            qtd_restante = row['Qtd Caixas']
-            cap_max = row['Capacidade_Max']
-            ordem_cx = row['Ordem_Caixa']
-
-            custo_unitario = 1.0 / cap_max
-
-            while qtd_restante > 0:
-                espaco_disponivel_pct = 1.0 - ocupacao_atual
-                
-                if espaco_disponivel_pct <= 0.001:
-                    pallet_id += 1
-                    misto_atual_id = f"Pallet {pallet_id} (Misto)"
-                    ocupacao_atual = 0.0
-                    espaco_disponivel_pct = 1.0
-
-                caixas_que_cabem = int(np.floor(espaco_disponivel_pct / custo_unitario))
-
-                if caixas_que_cabem == 0:
-                    pallet_id += 1
-                    misto_atual_id = f"Pallet {pallet_id} (Misto)"
-                    ocupacao_atual = 0.0
-                    caixas_que_cabem = int(np.floor(1.0 / custo_unitario))
-
-                qtd_alocar = min(qtd_restante, caixas_que_cabem)
-                
+            if caixas_cabem > 0:
+                qtd_alocar = min(qtd_restante, caixas_cabem)
                 pallets_lista.append({
-                    'ID': misto_atual_id,
+                    'ID': ultimo_pallet['id'],
                     'Tipo': "Misto 🟡",
                     'SKU': sku,
-                    'Produto': prod_nome,
+                    'Produto': prod['NOME DO PRODUTO'],
                     'Qtd Caixas': qtd_alocar,
-                    'Nº Caixa': num_caixa,
+                    'Nº Caixa': prod['NUMERO DA CAIXA'],
                     'Ordem_Caixa': ordem_cx,
-                    'Capacidade_Max': cap_max
+                    'Capacidade_Max': cap_pallet
+                })
+                ultimo_pallet['espaco_livre_pct'] -= (qtd_alocar * custo_unitario)
+                ultimo_pallet['skus'].append(sku)
+                qtd_restante -= qtd_alocar
+
+        # Aloca o restante do SKU criando pallets dedicados fechados ou o próximo pallet sequencial
+        while qtd_restante > 0:
+            if qtd_restante >= cap_pallet:
+                p_id = f"Pallet {pallet_id}"
+                pallets_lista.append({
+                    'ID': p_id,
+                    'Tipo': "Fechado 🟢",
+                    'SKU': sku,
+                    'Produto': prod['NOME DO PRODUTO'],
+                    'Qtd Caixas': cap_pallet,
+                    'Nº Caixa': prod['NUMERO DA CAIXA'],
+                    'Ordem_Caixa': ordem_cx,
+                    'Capacidade_Max': cap_pallet
+                })
+                pallet_id += 1
+                qtd_restante -= cap_pallet
+            else:
+                p_id = f"Pallet {pallet_id} (Misto)"
+                qtd_alocar = qtd_restante
+                usado_pct = qtd_alocar * custo_unitario
+                livre_pct = 1.0 - usado_pct
+
+                pallets_lista.append({
+                    'ID': p_id,
+                    'Tipo': "Misto 🟡",
+                    'SKU': sku,
+                    'Produto': prod['NOME DO PRODUTO'],
+                    'Qtd Caixas': qtd_alocar,
+                    'Nº Caixa': prod['NUMERO DA CAIXA'],
+                    'Ordem_Caixa': ordem_cx,
+                    'Capacidade_Max': cap_pallet
                 })
 
-                ocupacao_atual += qtd_alocar * custo_unitario
-                qtd_restante -= qtd_alocar
+                if livre_pct > 0.001:
+                    pallets_abertos.append({
+                        'id': p_id,
+                        'tipo': "Misto 🟡",
+                        'espaco_livre_pct': livre_pct,
+                        'skus': [sku]
+                    })
+                
+                pallet_id += 1
+                qtd_restante = 0
 
     return pd.DataFrame(pallets_lista)
 
-# --- ALGORITMO DE RENDERIZAÇÃO NO PALLET 0,75M X 1,20M ---
+# --- GERADOR GRÁFICO 3D ---
 def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     fig = go.Figure()
 
@@ -249,7 +234,6 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     skus_unicos = df_pallet_especifico['SKU'].unique()
     cor_map = {sku: paleta_cores[i % len(paleta_cores)] for i, sku in enumerate(skus_unicos)}
 
-    # 1. Expandir e ordenar caixas por peso/tamanho
     lista_caixas = []
     for _, row in df_pallet_especifico.iterrows():
         sku = row['SKU']
@@ -274,10 +258,8 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     if not lista_caixas:
         return fig
 
-    # Ordenar: Maiores e mais pesadas primeiro (para ficar na base Z=0)
-    lista_caixas.sort(key=lambda c: (c['ordem_caixa'], c['volume']), reverse=True)
+    lista_caixas.sort(key=lambda c: (c['ordem_caixa'], c['SKU']), reverse=True)
 
-    # Vértices unitários do cubo
     x_cube = [0, 1, 1, 0, 0, 1, 1, 0]
     y_cube = [0, 0, 1, 1, 0, 0, 1, 1]
     z_cube = [0, 0, 0, 0, 1, 1, 1, 1]
@@ -286,7 +268,6 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     j_mesh = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
     k_mesh = [0, 7, 2, 3, 6, 7, 1, 1, 1, 5, 2, 7]
 
-    # Cálculo da grade na área do Pallet (1.20m x 0.75m)
     ref_dx = lista_caixas[0]['dx']
     ref_dy = lista_caixas[0]['dy']
     
@@ -323,7 +304,7 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
                 flatshading=True,
                 lighting=dict(ambient=0.8, diffuse=0.9),
                 hoverinfo="text",
-                text=f"<b>SKU:</b> {item['SKU']}<br><b>Tipo:</b> {item['Caixa']}<br><b>Dimensões:</b> {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm<br><b>Nível Z:</b> {z_atual:.2f}m",
+                text=f"<b>SKU:</b> {item['SKU']}<br><b>Tipo:</b> {item['Caixa']}<br><b>Dimensões:</b> {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm",
                 showscale=False
             ))
             slot_idx += 1
@@ -331,8 +312,7 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
         z_atual += (altura_camada + 0.005)
         idx_caixa += caixas_por_camada
 
-    # Desenhar o Pallet de Madeira Fumigado com 6 Travessas na base
-    # Placa Principal Base
+    # Estrado Fumigado
     fig.add_trace(go.Mesh3d(
         x=[0, PALLET_COMP, PALLET_COMP, 0, 0, PALLET_COMP, PALLET_COMP, 0],
         y=[0, 0, PALLET_LARG, PALLET_LARG, 0, 0, PALLET_LARG, PALLET_LARG],
@@ -345,7 +325,6 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
         showscale=False
     ))
 
-    # Desenhar as 6 Travessas Transversais de Madeira
     posicoes_travessas = np.linspace(0.05, PALLET_COMP - 0.10, 6)
     for pos_x in posicoes_travessas:
         fig.add_trace(go.Mesh3d(
@@ -411,14 +390,13 @@ def gerar_pdf(df_pallets):
 
     return bytes(pdf.output())
 
-# --- BOTÃO DE PROCESSAMENTO ---
+# --- EXECUÇÃO ---
 if st.button("⚙️ CALCULAR E GERAR PALLETS 3D"):
     if not st.session_state.carrinho:
         st.warning("Adicione itens ao pedido antes de calcular.")
     else:
         st.session_state.processado = True
 
-# --- EXIBIÇÃO PERMANENTE APÓS O CÁLCULO ---
 if st.session_state.processado and st.session_state.carrinho:
     df_pallets = processar_pallets_detalhado(st.session_state.carrinho, df_produtos)
     
