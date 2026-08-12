@@ -12,8 +12,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📦 Sistema de Paletização e Visualização 3D - Pallet Fumigado (0.75m x 1.20m)")
-st.caption("Automação de montagem de pallets com agrupamento por SKU para otimização de rota no armazém.")
+st.title("📦 Sistema de Paletização")
+st.caption("Automação de montagem de pallets com agrupamento por SKU.")
 
 # --- DICIONÁRIO DE DIMENSÕES FÍSICAS REAIS DAS CAIXAS (em metros) ---
 DIMENSOES_CAIXAS = {
