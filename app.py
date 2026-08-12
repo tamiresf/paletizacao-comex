@@ -12,8 +12,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📦 Sistema de Paletização Otimizado e Visualização 3D")
-st.caption("Automação de montagem de pallets fechados, consolidação otimizada por gravidade/tamanho (sem buracos) e renderização 3D física.")
+st.title("📦 Sistema de Paletização e Visualização 3D - Pallet Fumigado (0.75m x 1.20m)")
+st.caption("Automação de montagem de pallets com amarração física por lastros planos sem buracos.")
 
 # --- DICIONÁRIO DE DIMENSÕES FÍSICAS REAIS DAS CAIXAS (em metros) ---
 DIMENSOES_CAIXAS = {
@@ -22,6 +22,10 @@ DIMENSOES_CAIXAS = {
     "CAIXA 2": {"comp": 0.295, "larg": 0.185, "alt": 0.130},
     "CAIXA 3": {"comp": 0.375, "larg": 0.195, "alt": 0.145},
 }
+
+# --- DIMENSÕES FÍSICAS DO PALLET DE MADEIRA FUMIGADO ---
+PALLET_COMP = 1.20  # 1200 mm
+PALLET_LARG = 0.75  # 750 mm
 
 def obter_dimensoes_caixa(num_caixa):
     """Retorna comprimento, largura e altura em metros baseado na identificação da caixa."""
@@ -77,7 +81,8 @@ st.sidebar.info(f"""
 **Informações do Cadastro:**  
 • **Caixa Tipo:** {prod_info['NUMERO DA CAIXA']}  
 • **Peças/Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
-• **Capacidade Pallet Fechado:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx
+• **Capacidade Pallet Fechado:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx  
+• **Dimensão Pallet:** 0,75m x 1,20m (Fumigado)
 """)
 
 qtd_solicitada = st.sidebar.number_input("Qtd de Caixas Solicitada:", min_value=1, value=int(prod_info['QUANTIDADE DE CAIXAS NO PALLET']), step=1)
@@ -236,19 +241,15 @@ def processar_pallets_detalhado(carrinho, df_produtos):
 
     return pd.DataFrame(pallets_lista)
 
-# --- ALGORITMO DE ORGANIZAÇÃO ESPACIAL 3D SEM BURACOS (BOTTOM-UP GRAVITY PACKING) ---
+# --- ALGORITMO DE RENDERIZAÇÃO NO PALLET 0,75M X 1,20M ---
 def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
-    """
-    Gera renderização 3D arranjando caixas maiores/pesadas embaixo e preenchendo
-    fileiras completas sem buracos, 'puxando' caixas menores para o nível inferior.
-    """
     fig = go.Figure()
 
-    paleta_cores = ['#D9A036', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#F59E0B']
+    paleta_cores = ['#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#F59E0B', '#D9A036']
     skus_unicos = df_pallet_especifico['SKU'].unique()
     cor_map = {sku: paleta_cores[i % len(paleta_cores)] for i, sku in enumerate(skus_unicos)}
 
-    # 1. Expandir todas as caixas individuais do pallet
+    # 1. Expandir e ordenar caixas por peso/tamanho
     lista_caixas = []
     for _, row in df_pallet_especifico.iterrows():
         sku = row['SKU']
@@ -273,28 +274,10 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     if not lista_caixas:
         return fig
 
-    # 2. Ordenar Caixas: Maior Volume / Maior Tipo de Caixa primeiro (Fica no Fundo/Base)
+    # Ordenar: Maiores e mais pesadas primeiro (para ficar na base Z=0)
     lista_caixas.sort(key=lambda c: (c['ordem_caixa'], c['volume']), reverse=True)
 
-    # 3. Definir Grid de Base do Pallet Padrão (Ex: Padrão PBR ~ 1.2m x 1.0m)
-    # Calculamos dinamicamente quantas caixas cabem por camada base
-    total_caixas = len(lista_caixas)
-    if total_caixas <= 12:
-        nx, ny = 2, 2
-    elif total_caixas <= 30:
-        nx, ny = 3, 3
-    elif total_caixas <= 60:
-        nx, ny = 4, 3
-    elif total_caixas <= 90:
-        nx, ny = 4, 4
-    else:
-        nx, ny = 5, 4
-
-    # 4. Matriz de Alocação de Posição 3D sem Buracos
-    # Controlamos a altura máxima acumulada em cada posição da base (x, y)
-    alturas_grid = np.zeros((nx, ny))
-    
-    # Geometria base do cubo 3D
+    # Vértices unitários do cubo
     x_cube = [0, 1, 1, 0, 0, 1, 1, 0]
     y_cube = [0, 0, 1, 1, 0, 0, 1, 1]
     z_cube = [0, 0, 0, 0, 1, 1, 1, 1]
@@ -303,46 +286,84 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     j_mesh = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
     k_mesh = [0, 7, 2, 3, 6, 7, 1, 1, 1, 5, 2, 7]
 
-    box_count = 0
+    # Cálculo da grade na área do Pallet (1.20m x 0.75m)
+    ref_dx = lista_caixas[0]['dx']
+    ref_dy = lista_caixas[0]['dy']
     
-    # Preenchimento em Camadas Horizontalmente Prioritário
-    # Garante que NENHUMA caixa flutue e que espaços vagos de baixo sejam ocupados primeiro
-    for i_box, item in enumerate(lista_caixas):
-        # Encontrar a célula da base (x, y) com a MENOR altura acumulada Z para apoiar a caixa
-        min_z_idx = np.unravel_index(np.argmin(alturas_grid, axis=None), alturas_grid.shape)
-        x_idx, y_idx = min_z_idx
+    cols_x = max(1, int(np.floor(PALLET_COMP / ref_dx)))
+    cols_y = max(1, int(np.floor(PALLET_LARG / ref_dy)))
+    caixas_por_camada = cols_x * cols_y
+
+    idx_caixa = 0
+    z_atual = 0.0
+    total_caixas = len(lista_caixas)
+
+    while idx_caixa < total_caixas:
+        camada_caixas = lista_caixas[idx_caixa : idx_caixa + caixas_por_camada]
+        altura_camada = max(c['dz'] for c in camada_caixas)
         
-        z0 = alturas_grid[x_idx, y_idx]
-        dx, dy, dz = item['dx'], item['dy'], item['dz']
+        slot_idx = 0
+        for item in camada_caixas:
+            cx_i = slot_idx % cols_x
+            cy_i = slot_idx // cols_x
+            
+            dx, dy, dz = item['dx'], item['dy'], item['dz']
+            
+            x0 = cx_i * (PALLET_COMP / cols_x)
+            y0 = cy_i * (PALLET_LARG / cols_y)
+            
+            x_box = [x0 + vx * (dx * 0.96) for vx in x_cube]
+            y_box = [y0 + vy * (dy * 0.96) for vy in y_cube]
+            z_box = [z_atual + vz * dz for vz in z_cube]
 
-        # Posições no espaço físico (metros)
-        x0 = x_idx * (dx + 0.015)
-        y0 = y_idx * (dy + 0.015)
+            fig.add_trace(go.Mesh3d(
+                x=x_box, y=y_box, z=z_box,
+                i=i_mesh, j=j_mesh, k=k_mesh,
+                color=item['Cor'],
+                flatshading=True,
+                lighting=dict(ambient=0.8, diffuse=0.9),
+                hoverinfo="text",
+                text=f"<b>SKU:</b> {item['SKU']}<br><b>Tipo:</b> {item['Caixa']}<br><b>Dimensões:</b> {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm<br><b>Nível Z:</b> {z_atual:.2f}m",
+                showscale=False
+            ))
+            slot_idx += 1
 
-        x_box = [x0 + vx * dx for vx in x_cube]
-        y_box = [y0 + vy * dy for vy in y_cube]
-        z_box = [z0 + vz * dz for vz in z_cube]
+        z_atual += (altura_camada + 0.005)
+        idx_caixa += caixas_por_camada
 
+    # Desenhar o Pallet de Madeira Fumigado com 6 Travessas na base
+    # Placa Principal Base
+    fig.add_trace(go.Mesh3d(
+        x=[0, PALLET_COMP, PALLET_COMP, 0, 0, PALLET_COMP, PALLET_COMP, 0],
+        y=[0, 0, PALLET_LARG, PALLET_LARG, 0, 0, PALLET_LARG, PALLET_LARG],
+        z=[-0.05, -0.05, -0.05, -0.05, 0, 0, 0, 0],
+        i=i_mesh, j=j_mesh, k=k_mesh,
+        color='#7C4700',
+        opacity=0.8,
+        hoverinfo="text",
+        text="Pallet Fumigado (0,75m x 1,20m)",
+        showscale=False
+    ))
+
+    # Desenhar as 6 Travessas Transversais de Madeira
+    posicoes_travessas = np.linspace(0.05, PALLET_COMP - 0.10, 6)
+    for pos_x in posicoes_travessas:
         fig.add_trace(go.Mesh3d(
-            x=x_box, y=y_box, z=z_box,
+            x=[pos_x, pos_x+0.08, pos_x+0.08, pos_x, pos_x, pos_x+0.08, pos_x+0.08, pos_x],
+            y=[0, 0, PALLET_LARG, PALLET_LARG, 0, 0, PALLET_LARG, PALLET_LARG],
+            z=[-0.12, -0.12, -0.12, -0.12, -0.05, -0.05, -0.05, -0.05],
             i=i_mesh, j=j_mesh, k=k_mesh,
-            color=item['Cor'],
-            flatshading=True,
-            lighting=dict(ambient=0.75, diffuse=0.85),
-            hoverinfo="text",
-            text=f"<b>SKU:</b> {item['SKU']}<br><b>Tipo:</b> {item['Caixa']}<br><b>Dimensões:</b> {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm<br><b>Nível (Z):</b> {z0:.2f}m",
+            color='#4A2A00',
+            opacity=0.9,
+            hoverinfo="none",
             showscale=False
         ))
 
-        # Atualiza a altura do pilar onde a caixa foi colocada
-        alturas_grid[x_idx, y_idx] += (dz + 0.008)
-        box_count += 1
-
     fig.update_layout(
-        title=f"{titulo} ({total_caixas} caixas) - Arrumação Estável sem Vagos",
+        title=f"{titulo} ({total_caixas} caixas) - Base 0.75m x 1.20m",
         scene=dict(
-            xaxis=dict(title="Comp (m)", showgrid=True),
-            yaxis=dict(title="Larg (m)", showgrid=True),
+            xaxis=dict(title="Comp (1.20m)", showgrid=True),
+            yaxis=dict(title="Larg (0.75m)", showgrid=True),
             zaxis=dict(title="Alt (m)", showgrid=True),
             aspectmode='data'
         ),
@@ -356,6 +377,7 @@ def gerar_pdf(df_pallets):
     pdf.add_page()
     pdf.set_font("Helvetica", 'B', 16)
     pdf.cell(0, 10, "Relatorio de Paletizacao - COMEX", ln=True, align='C')
+    pdf.cell(0, 5, "Pallet Fumigado 0,75m x 1,20m (6 Travessas)", ln=True, align='C')
     pdf.ln(10)
 
     pallets_unicos = df_pallets['ID'].unique()
