@@ -7,13 +7,13 @@ from fpdf import FPDF
 
 # Configuração da página Streamlit
 st.set_page_config(
-    page_title="Sistema de Paletização 3D - COMEX",
+    page_title="Sistema de Paletização - COMEX",
     page_icon="📦",
     layout="wide"
 )
 
-st.title("📦 Sistema de Paletização e Visualização 3D")
-st.caption("Automação de montagem de pallets fechados, consolidação de mistos por capacidade e renderização 3D.")
+st.title("📦 Sistema de Paletização")
+st.caption("Automação de montagem de pallets fechados, consolidação de mistos por capacidade.")
 
 # --- CARREGAR BASE ---
 @st.cache_data
@@ -77,7 +77,8 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
             'SKU': sku_sel,
             'Produto': prod_info['NOME DO PRODUTO'],
             'Nº Caixa': prod_info['NUMERO DA CAIXA'],
-            'Qtd_Caixas': qtd_solicitada
+            'Qtd_Caixas': qtd_solicitada,
+            'Pecas_Por_Caixa': int(prod_info['QUANTIDADE DE PEÇAS'])
         })
     st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
@@ -86,25 +87,43 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
 st.subheader("🛒 Itens do Pedido Atual")
 
 if st.session_state.carrinho:
+    total_caixas_pedido = 0
+    total_pecas_pedido = 0
+
     for index in range(len(st.session_state.carrinho) - 1, -1, -1):
         item = st.session_state.carrinho[index]
-        c1, c2, c3, c4, c5 = st.columns([1.5, 3.5, 1.5, 1.5, 1])
+        pecas_cx = item.get('Pecas_Por_Caixa', 1)
+        total_pecas_item = item['Qtd_Caixas'] * pecas_cx
+        
+        total_caixas_pedido += item['Qtd_Caixas']
+        total_pecas_pedido += total_pecas_item
+
+        c1, c2, c3, c4, c5, c6 = st.columns([1.5, 3, 1.2, 1.3, 1.5, 0.8])
         
         c1.write(f"**SKU:** {item['SKU']}")
         c2.write(f"**Produto:** {item['Produto']}")
         c3.write(f"**Caixa Nº:** {item['Nº Caixa']}")
         c4.write(f"**Qtd:** {item['Qtd_Caixas']} cx")
+        c5.write(f"**Total Peças:** {total_pecas_item:,}".replace(",", "."))
         
-        if c5.button("🗑️ Excluir", key=f"remover_{index}_{item['SKU']}"):
+        if c6.button("🗑️", key=f"remover_{index}_{item['SKU']}", help="Remover item"):
             st.session_state.carrinho.pop(index)
             st.session_state.processado = False
             st.rerun()
 
     st.markdown("---")
-    if st.button("🔴 Limpar Todo o Pedido"):
-        st.session_state.carrinho = []
-        st.session_state.processado = False
-        st.rerun()
+    
+    # --- LINHA DE TOTALIZAÇÃO DO PEDIDO ---
+    m1, m2, m3 = st.columns([2, 2, 2])
+    m1.metric(label="📦 Total de Caixas no Pedido", value=f"{total_caixas_pedido:,} cx".replace(",", "."))
+    m2.metric(label="🧩 Total de Peças no Pedido", value=f"{total_pecas_pedido:,} peças".replace(",", "."))
+    
+    with m3:
+        st.write("")
+        if st.button("🔴 Limpar Todo o Pedido", use_container_width=True):
+            st.session_state.carrinho = []
+            st.session_state.processado = False
+            st.rerun()
 else:
     st.info("Nenhum item inserido no pedido até o momento. Utilize o menu lateral para adicionar.")
 
@@ -153,11 +172,10 @@ def processar_pallets_detalhado(carrinho, df_produtos):
 
     # 2. Processar Sobras em Pallets Mistos (com ordenação de caixas maiores na base e limite de capacidade)
     if sobras_para_misto:
-        # Ordena as sobras da MAIOR caixa para a MENOR caixa (Caixa 3 -> Caixa 2 -> Caixa 1 -> Caixa 0)
         df_sobras = pd.DataFrame(sobras_para_misto).sort_values(by='Ordem_Caixa', ascending=False)
         
         misto_atual_id = f"Pallet {pallet_id} (Misto)"
-        ocupacao_atual = 0.0  # Ocupação em fração de 0.0 a 1.0 (0% a 100%)
+        ocupacao_atual = 0.0
 
         for _, row in df_sobras.iterrows():
             sku = row['SKU']
@@ -167,14 +185,11 @@ def processar_pallets_detalhado(carrinho, df_produtos):
             cap_max = row['Capacidade_Max']
             ordem_cx = row['Ordem_Caixa']
 
-            # Custo de 1 caixa em % do pallet
             custo_unitario = 1.0 / cap_max
 
             while qtd_restante > 0:
-                # Quanto ainda cabe no pallet atual em termos de caixas desse SKU
                 espaco_disponivel_pct = 1.0 - ocupacao_atual
                 
-                # Se o pallet atual já estiver 99.9% cheio, cria um novo pallet misto
                 if espaco_disponivel_pct <= 0.001:
                     pallet_id += 1
                     misto_atual_id = f"Pallet {pallet_id} (Misto)"
@@ -184,7 +199,6 @@ def processar_pallets_detalhado(carrinho, df_produtos):
                 caixas_que_cabem = int(np.floor(espaco_disponivel_pct / custo_unitario))
 
                 if caixas_que_cabem == 0:
-                    # Não cabe nem 1 caixa desse SKU no pallet atual -> abre novo pallet
                     pallet_id += 1
                     misto_atual_id = f"Pallet {pallet_id} (Misto)"
                     ocupacao_atual = 0.0
