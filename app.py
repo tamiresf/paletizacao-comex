@@ -7,13 +7,31 @@ from fpdf import FPDF
 
 # Configuração da página Streamlit
 st.set_page_config(
-    page_title="Sistema de Paletização - COMEX",
+    page_title="Sistema de Paletização 3D - COMEX",
     page_icon="📦",
     layout="wide"
 )
 
-st.title("📦 Sistema de Paletização")
-st.caption("Automação de montagem de pallets fechados, consolidação de mistos por capacidade.")
+st.title("📦 Sistema de Paletização e Visualização 3D")
+st.caption("Automação de montagem de pallets fechados, consolidação de mistos por capacidade e renderização 3D em escala real.")
+
+# --- DICIONÁRIO DE DIMENSÕES FÍSICAS REAIS DAS CAIXAS (em metros) ---
+DIMENSOES_CAIXAS = {
+    "CAIXA 0": {"comp": 0.230, "larg": 0.145, "alt": 0.125},
+    "CAIXA 1": {"comp": 0.285, "larg": 0.155, "alt": 0.125},
+    "CAIXA 2": {"comp": 0.295, "larg": 0.185, "alt": 0.130},
+    "CAIXA 3": {"comp": 0.375, "larg": 0.195, "alt": 0.145},
+}
+
+def obter_dimensoes_caixa(num_caixa):
+    """Retorna comprimento, largura e altura em metros baseado na identificação da caixa."""
+    num_str = str(num_caixa).upper().strip()
+    if "CAIXA" not in num_str:
+        key = f"CAIXA {num_str}"
+    else:
+        key = num_str
+    
+    return DIMENSOES_CAIXAS.get(key, {"comp": 0.300, "larg": 0.200, "alt": 0.150})
 
 # --- CARREGAR BASE ---
 @st.cache_data
@@ -21,7 +39,6 @@ def carregar_base(caminho_excel):
     df = pd.read_excel(caminho_excel)
     df.columns = df.columns.str.strip()
     df['SKU'] = df['SKU'].astype(str).str.strip()
-    # Mapeamento do tamanho numérico das caixas para ordenação (maior -> menor)
     def extrair_num_caixa(val):
         try:
             val_str = str(val).upper().replace("CAIXA", "").strip()
@@ -63,7 +80,7 @@ st.sidebar.info(f"""
 • **Capacidade Pallet Fechado:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx
 """)
 
-qtd_solicitada = st.sidebar.number_input("Qtd de Caixas Solicitada:", min_value=1, value=160, step=1)
+qtd_solicitada = st.sidebar.number_input("Qtd de Caixas Solicitada:", min_value=1, value=int(prod_info['QUANTIDADE DE CAIXAS NO PALLET']), step=1)
 
 if st.sidebar.button("➕ Adicionar ao Pedido"):
     existente = False
@@ -135,7 +152,6 @@ def processar_pallets_detalhado(carrinho, df_produtos):
     pallet_id = 1
     sobras_para_misto = []
 
-    # 1. Gerar Pallets Fechados e separar as sobras
     for item in carrinho:
         sku = str(item['SKU']).strip()
         qtd = int(item['Qtd_Caixas'])
@@ -170,7 +186,6 @@ def processar_pallets_detalhado(carrinho, df_produtos):
                 'Capacidade_Max': cap_pallet
             })
 
-    # 2. Processar Sobras em Pallets Mistos (com ordenação de caixas maiores na base e limite de capacidade)
     if sobras_para_misto:
         df_sobras = pd.DataFrame(sobras_para_misto).sort_values(by='Ordem_Caixa', ascending=False)
         
@@ -222,16 +237,52 @@ def processar_pallets_detalhado(carrinho, df_produtos):
 
     return pd.DataFrame(pallets_lista)
 
-def gerar_grafico_3d(qtd_caixas, titulo):
-    dx, dy, dz = 0.9, 0.9, 0.7
-    camada = int(np.ceil(qtd_caixas ** (1/3)))
-    nx = camada
-    ny = camada
-    nz = int(np.ceil(qtd_caixas / (nx * ny)))
-
+def gerar_grafico_3d_fidedigno(df_pallet_especifico, titulo):
+    """
+    Gera a estrutura 3D com dimensões físicas em metros (mm -> m) das caixas especificadas na imagem.
+    """
     fig = go.Figure()
-    count = 0
 
+    paleta_cores = ['#D9A036', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#F59E0B']
+    skus_unicos = df_pallet_especifico['SKU'].unique()
+    cor_map = {sku: paleta_cores[i % len(paleta_cores)] for i, sku in enumerate(skus_unicos)}
+
+    total_caixas = int(df_pallet_especifico['Qtd Caixas'].sum())
+    if total_caixas == 0:
+        return fig
+
+    # Configuração de arranjo da base
+    if total_caixas <= 12:
+        nx, ny = 2, 2
+    elif total_caixas <= 30:
+        nx, ny = 3, 3
+    elif total_caixas <= 60:
+        nx, ny = 4, 3
+    elif total_caixas <= 90:
+        nx, ny = 4, 4
+    else:
+        nx, ny = 5, 4
+
+    nz = int(np.ceil(total_caixas / (nx * ny)))
+
+    caixas_fisicas = []
+    for _, row in df_pallet_especifico.iterrows():
+        sku = row['SKU']
+        qtd = int(row['Qtd Caixas'])
+        cor = cor_map[sku]
+        cx_nome = row['Nº Caixa']
+        dims = obter_dimensoes_caixa(cx_nome)
+        for _ in range(qtd):
+            caixas_fisicas.append({
+                'SKU': sku, 
+                'Cor': cor, 
+                'Caixa': cx_nome,
+                'dx': dims['comp'],
+                'dy': dims['larg'],
+                'dz': dims['alt']
+            })
+
+    # Vértices unitários
     x_cube = [0, 1, 1, 0, 0, 1, 1, 0]
     y_cube = [0, 0, 1, 1, 0, 0, 1, 1]
     z_cube = [0, 0, 0, 0, 1, 1, 1, 1]
@@ -240,13 +291,20 @@ def gerar_grafico_3d(qtd_caixas, titulo):
     j_mesh = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
     k_mesh = [0, 7, 2, 3, 6, 7, 1, 1, 1, 5, 2, 7]
 
-    for k in range(nz):
-        for j in range(ny):
-            for i in range(nx):
-                if count < qtd_caixas:
-                    x0 = i * 1.0
-                    y0 = j * 1.0
-                    z0 = k * 0.8
+    box_idx = 0
+
+    for z in range(nz):
+        for y in range(ny):
+            for x in range(nx):
+                if box_idx < len(caixas_fisicas):
+                    item = caixas_fisicas[box_idx]
+                    
+                    dx, dy, dz = item['dx'], item['dy'], item['dz']
+
+                    # Posição acumulada no espaço (com pequenos espaçamentos estéticos)
+                    x0 = x * (dx + 0.02)
+                    y0 = y * (dy + 0.02)
+                    z0 = z * (dz + 0.01)
 
                     x_box = [x0 + vx * dx for vx in x_cube]
                     y_box = [y0 + vy * dy for vy in y_cube]
@@ -255,23 +313,24 @@ def gerar_grafico_3d(qtd_caixas, titulo):
                     fig.add_trace(go.Mesh3d(
                         x=x_box, y=y_box, z=z_box,
                         i=i_mesh, j=j_mesh, k=k_mesh,
-                        color='#C29B38',
+                        color=item['Cor'],
                         flatshading=True,
-                        lighting=dict(ambient=0.6, diffuse=0.8),
-                        name=f'Caixa {count + 1}',
+                        lighting=dict(ambient=0.75, diffuse=0.85),
+                        hoverinfo="text",
+                        text=f"SKU: {item['SKU']}<br>Tipo: {item['Caixa']}<br>Dimensões: {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm<br>Caixa #{box_idx+1}",
                         showscale=False
                     ))
-                    count += 1
+                    box_idx += 1
 
     fig.update_layout(
-        title=titulo,
+        title=f"{titulo} ({total_caixas} caixas)",
         scene=dict(
-            xaxis=dict(visible=False),
-            yaxis=dict(visible=False),
-            zaxis=dict(visible=False),
+            xaxis=dict(title="Comp (m)", showgrid=True),
+            yaxis=dict(title="Larg (m)", showgrid=True),
+            zaxis=dict(title="Alt (m)", showgrid=True),
             aspectmode='data'
         ),
-        margin=dict(l=0, r=0, b=0, t=30),
+        margin=dict(l=0, r=0, b=0, t=35),
         showlegend=False
     )
     return fig
@@ -346,7 +405,7 @@ if st.session_state.processado and st.session_state.carrinho:
     for p_id in pallets_unicos:
         df_p = df_pallets[df_pallets['ID'] == p_id]
         tipo_pallet = df_p['Tipo'].iloc[0]
-        total_cx = df_p['Qtd Caixas'].sum()
+        total_cx = int(df_p['Qtd Caixas'].sum())
 
         with st.expander(f"📌 {p_id} - Total: {total_cx} caixas ({tipo_pallet})", expanded=True):
             col_tabela, col_3d = st.columns([1, 1])
@@ -356,5 +415,5 @@ if st.session_state.processado and st.session_state.carrinho:
                 st.dataframe(df_p[['SKU', 'Produto', 'Nº Caixa', 'Qtd Caixas']], use_container_width=True)
             
             with col_3d:
-                fig_3d = gerar_grafico_3d(total_cx, f"Estrutura 3D - {p_id}")
+                fig_3d = gerar_grafico_3d_fidedigno(df_p, f"Estrutura 3D - {p_id}")
                 st.plotly_chart(fig_3d, use_container_width=True)
