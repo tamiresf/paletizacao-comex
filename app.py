@@ -7,7 +7,7 @@ from fpdf import FPDF
 
 # Configuração da página Streamlit
 st.set_page_config(
-    page_title="Sistema de Paletização 3D - COMEX",
+    page_title="Sistema de Paletização - COMEX",
     page_icon="📦",
     layout="wide"
 )
@@ -72,8 +72,7 @@ st.sidebar.info(f"""
 **Informações do Cadastro:**  
 • **Caixa Tipo:** {prod_info['NUMERO DA CAIXA']}  
 • **Peças/Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
-• **Capacidade Pallet Fechado:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx  
-• **Dimensão Pallet:** 0,75m x 1,20m (Fumigado)
+• **Capacidade Pallet Fechado:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx
 """)
 
 qtd_solicitada = st.sidebar.number_input("Qtd de Caixas Solicitada:", min_value=1, value=int(prod_info['QUANTIDADE DE CAIXAS NO PALLET']), step=1)
