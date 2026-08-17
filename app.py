@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("📦 Sistema de Paletização e Visualização 3D")
-st.caption("Pallet Fumigado (0,75m x 1,20m) — Regra de Consolidação Sequencial por Tipo de Caixa")
+st.caption("Pallet Fumigado (0,75m x 1,20m) — Regra de Separação Estreita de Tipos de Caixas")
 
 # Importação condicional do FPDF
 try:
@@ -79,7 +79,7 @@ for c in caminhos_possiveis:
 
 if not CAMINHO_EXCEL:
     st.error("⚠️ O arquivo 'COMEX.xlsx' não foi encontrado no diretório do projeto.")
-    st.info("Certifique-se de que o arquivo 'COMEX.xlsx' está salvo na raiz do projeto no GitHub.")
+    st.info("Certifique-se de que o arquivo 'COMEX.xlsx' está salvo na raiz do projeto.")
     st.stop()
 
 try:
@@ -179,13 +179,13 @@ else:
 
 st.markdown("---")
 
-# --- 7. ALGORITMO DE PALETIZAÇÃO (ORDENADO E CONTÍNUO POR TIPO DE CAIXA) ---
+# --- 7. ALGORITMO DE PALETIZAÇÃO (SEPARAÇÃO POR TIPO E COMBINAÇÃO APENAS NO ÚLTIMO PALLET) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_lista = []
     pallet_id = 1
     sobras_por_sku = []
 
-    # 1. Separar Pallets Fechados (Monoproduto) e Mapear Sobras
+    # 1. Pallets Fechados e Separação das Sobras
     for item in carrinho:
         sku = str(item['SKU']).strip()
         qtd = int(item['Qtd_Caixas'])
@@ -198,7 +198,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd_pallets_fechados = qtd // cap_pallet
         resto = qtd % cap_pallet
 
-        # Pallets Fechados Monoproduto
+        # Pallets Monoproduto Fechados
         for _ in range(qtd_pallets_fechados):
             pallets_lista.append({
                 'ID': f"Pallet {pallet_id}",
@@ -212,7 +212,6 @@ def processar_pallets_operador(carrinho, df_produtos):
             })
             pallet_id += 1
 
-        # Sobras para os pallets mistos
         if resto > 0:
             sobras_por_sku.append({
                 'SKU': sku,
@@ -223,52 +222,104 @@ def processar_pallets_operador(carrinho, df_produtos):
                 'Capacidade_Max': cap_pallet
             })
 
-    # 2. Consolidação Contínua nos Pallets Mistos (Ordenando por Tipo de Caixa)
+    # 2. Consolidação Exclusiva por Tipo de Caixa
     if sobras_por_sku:
         df_sobras = pd.DataFrame(sobras_por_sku)
-        # Ordena as sobras por tipo de caixa (Ordem_Caixa) e SKU para agrupar caixa com caixa
-        df_sobras = df_sobras.sort_values(by=['Ordem_Caixa', 'SKU'], ascending=[True, True])
+        sobras_finais_para_misturar = []
 
-        misto_atual_id = f"Pallet {pallet_id} (Misto)"
-        capacidade_usada_fracao = 0.0
+        # Agrupa por tipo de caixa (Ordem_Caixa)
+        for ordem_cx, df_grupo in df_sobras.groupby('Ordem_Caixa'):
+            num_caixa_tipo = df_grupo['Nº Caixa'].iloc[0]
+            cap_max_tipo = df_grupo['Capacidade_Max'].iloc[0]
+            fracao_unidade = 1.0 / cap_max_tipo
 
-        for _, row in df_sobras.iterrows():
-            sku = row['SKU']
-            prod_nome = row['Produto']
-            num_caixa = row['Nº Caixa']
-            qtd_restante = row['Qtd Caixas']
-            cap_max = row['Capacidade_Max']
-            ordem_cx = row['Ordem_Caixa']
+            pallet_mesmo_tipo_id = f"Pallet {pallet_id} (Sobras - Caixa {num_caixa_tipo})"
+            capacidade_usada = 0.0
+            itens_no_pallet_atual = []
 
-            fracao_unidade = 1.0 / cap_max
+            for _, row in df_grupo.iterrows():
+                qtd_restante = row['Qtd Caixas']
 
-            while qtd_restante > 0:
-                espaco_disponivel = 1.0 - capacidade_usada_fracao
-                caixas_que_cabem = int(np.floor((espaco_disponivel + 1e-9) / fracao_unidade))
+                while qtd_restante > 0:
+                    espaco_disponivel = 1.0 - capacidade_usada
+                    caixas_que_cabem = int(np.floor((espaco_disponivel + 1e-9) / fracao_unidade))
 
-                # Se o pallet misto atual encheu (capacidade = 1.0), abre o próximo pallet misto
-                if caixas_que_cabem == 0:
-                    pallet_id += 1
-                    misto_atual_id = f"Pallet {pallet_id} (Misto)"
-                    capacidade_usada_fracao = 0.0
-                    caixas_que_cabem = int(np.floor((1.0 + 1e-9) / fracao_unidade))
+                    if caixas_que_cabem == 0:
+                        # Pallet cheio do mesmo tipo
+                        for it in itens_no_pallet_atual:
+                            pallets_lista.append(it)
+                        pallet_id += 1
+                        pallet_mesmo_tipo_id = f"Pallet {pallet_id} (Sobras - Caixa {num_caixa_tipo})"
+                        capacidade_usada = 0.0
+                        itens_no_pallet_atual = []
+                        caixas_que_cabem = cap_max_tipo
 
-                qtd_alocar = min(qtd_restante, caixas_que_cabem)
-                fracao_alocada = qtd_alocar * fracao_unidade
+                    qtd_alocar = min(qtd_restante, caixas_que_cabem)
+                    fracao_alocada = qtd_alocar * fracao_unidade
 
-                pallets_lista.append({
-                    'ID': misto_atual_id,
-                    'Tipo': "Misto 🟡",
-                    'SKU': sku,
-                    'Produto': prod_nome,
-                    'Qtd Caixas': qtd_alocar,
-                    'Nº Caixa': num_caixa,
-                    'Ordem_Caixa': ordem_cx,
-                    'Capacidade_Max': cap_max
-                })
+                    itens_no_pallet_atual.append({
+                        'ID': pallet_mesmo_tipo_id,
+                        'Tipo': "Misto (Mesma Caixa) 🟡",
+                        'SKU': row['SKU'],
+                        'Produto': row['Produto'],
+                        'Qtd Caixas': qtd_alocar,
+                        'Nº Caixa': row['Nº Caixa'],
+                        'Ordem_Caixa': ordem_cx,
+                        'Capacidade_Max': cap_max_tipo
+                    })
 
-                capacidade_usada_fracao += fracao_alocada
-                qtd_restante -= qtd_alocar
+                    capacidade_usada += fracao_alocada
+                    qtd_restante -= qtd_alocar
+
+            # Se o pallet do mesmo tipo encheu 100%, consolida. Caso contrário, envia para a mistura do ÚLTIMO PALLET.
+            if abs(capacidade_usada - 1.0) < 1e-6:
+                for it in itens_no_pallet_atual:
+                    pallets_lista.append(it)
+                pallet_id += 1
+            else:
+                # Armazena as sobras remanescentes deste tipo de caixa
+                for it in itens_no_pallet_atual:
+                    sobras_finais_para_misturar.append(it)
+
+        # 3. ÚLTIMO PALLET MISTO (Apenas se restaram sobras incompletas de tipos diferentes)
+        if sobras_finais_para_misturar:
+            df_ultimas_sobras = pd.DataFrame(sobras_finais_para_misturar)
+            df_ultimas_sobras = df_ultimas_sobras.sort_values(by=['Ordem_Caixa', 'SKU'])
+
+            ultimo_pallet_id = f"Pallet {pallet_id} (Misto Final)"
+            cap_usada_ultimo = 0.0
+
+            for _, row in df_ultimas_sobras.iterrows():
+                cap_max = row['Capacidade_Max']
+                fracao_unidade = 1.0 / cap_max
+                qtd_restante = row['Qtd Caixas']
+
+                while qtd_restante > 0:
+                    espaco_disponivel = 1.0 - cap_usada_ultimo
+                    caixas_que_cabem = int(np.floor((espaco_disponivel + 1e-9) / fracao_unidade))
+
+                    if caixas_que_cabem == 0:
+                        pallet_id += 1
+                        ultimo_pallet_id = f"Pallet {pallet_id} (Misto Final)"
+                        cap_usada_ultimo = 0.0
+                        caixas_que_cabem = int(np.floor((1.0 + 1e-9) / fracao_unidade))
+
+                    qtd_alocar = min(qtd_restante, caixas_que_cabem)
+                    fracao_alocada = qtd_alocar * fracao_unidade
+
+                    pallets_lista.append({
+                        'ID': ultimo_pallet_id,
+                        'Tipo': "Misto Diversos 🟠",
+                        'SKU': row['SKU'],
+                        'Produto': row['Produto'],
+                        'Qtd Caixas': qtd_alocar,
+                        'Nº Caixa': row['Nº Caixa'],
+                        'Ordem_Caixa': row['Ordem_Caixa'],
+                        'Capacidade_Max': cap_max
+                    })
+
+                    cap_usada_ultimo += fracao_alocada
+                    qtd_restante -= qtd_alocar
 
     return pd.DataFrame(pallets_lista)
 
@@ -392,7 +443,7 @@ def gerar_pdf(df_pallets):
     for p_id in pallets_unicos:
         df_p = df_pallets[df_pallets['ID'] == p_id]
         tipo_raw = str(df_p['Tipo'].iloc[0])
-        tipo_limpo = tipo_raw.replace("🟢", "").replace("🟡", "").strip()
+        tipo_limpo = tipo_raw.replace("🟢", "").replace("🟡", "").replace("🟠", "").strip()
         total_cx = df_p['Qtd Caixas'].sum()
 
         pdf.set_font("Helvetica", 'B', 12)
