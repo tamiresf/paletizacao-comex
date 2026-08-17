@@ -6,12 +6,13 @@ import os
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Sistema de Paletização - COMEX",
+    page_title="Sistema de Paletização 3D - COMEX",
     page_icon="📦",
     layout="wide"
 )
 
-st.title("📦 Sistema de Paletização")
+st.title("📦 Sistema de Paletização e Visualização 3D")
+st.caption("Pallet Fumigado (0,75m x 1,20m) — Regra de Consolidação Sequencial por Tipo de Caixa")
 
 # Importação condicional do FPDF
 try:
@@ -178,7 +179,7 @@ else:
 
 st.markdown("---")
 
-# --- 7. ALGORITMO DE PALETIZAÇÃO (REGRAS DE CONSOLIDAÇÃO POR TIPO DE CAIXA) ---
+# --- 7. ALGORITMO DE PALETIZAÇÃO (ORDENADO E CONTÍNUO POR TIPO DE CAIXA) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_lista = []
     pallet_id = 1
@@ -211,7 +212,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             })
             pallet_id += 1
 
-        # Mapeia sobras para os pallets mistos
+        # Sobras para os pallets mistos
         if resto > 0:
             sobras_por_sku.append({
                 'SKU': sku,
@@ -222,57 +223,52 @@ def processar_pallets_operador(carrinho, df_produtos):
                 'Capacidade_Max': cap_pallet
             })
 
-    # 2. Consolidação nos Pallets Mistos (ESTRITO POR TIPO DE CAIXA)
+    # 2. Consolidação Contínua nos Pallets Mistos (Ordenando por Tipo de Caixa)
     if sobras_por_sku:
         df_sobras = pd.DataFrame(sobras_por_sku)
+        # Ordena as sobras por tipo de caixa (Ordem_Caixa) e SKU para agrupar caixa com caixa
+        df_sobras = df_sobras.sort_values(by=['Ordem_Caixa', 'SKU'], ascending=[True, True])
 
-        # Agrupa unicamente por Nº/Tipo de Caixa para garantir que tipos diferentes NUNCA se misturem
-        for num_caixa, grupo in df_sobras.groupby('Nº Caixa', sort=False):
-            misto_atual_id = f"Pallet {pallet_id} (Misto)"
-            capacidade_usada_fracao = 0.0
-            pallet_usado = False
+        misto_atual_id = f"Pallet {pallet_id} (Misto)"
+        capacidade_usada_fracao = 0.0
 
-            for _, row in grupo.iterrows():
-                sku = row['SKU']
-                prod_nome = row['Produto']
-                qtd_restante = row['Qtd Caixas']
-                cap_max = row['Capacidade_Max']
-                ordem_cx = row['Ordem_Caixa']
+        for _, row in df_sobras.iterrows():
+            sku = row['SKU']
+            prod_nome = row['Produto']
+            num_caixa = row['Nº Caixa']
+            qtd_restante = row['Qtd Caixas']
+            cap_max = row['Capacidade_Max']
+            ordem_cx = row['Ordem_Caixa']
 
-                fracao_unidade = 1.0 / cap_max
+            fracao_unidade = 1.0 / cap_max
 
-                while qtd_restante > 0:
-                    espaco_disponivel = 1.0 - capacidade_usada_fracao
-                    caixas_que_cabem = int(np.floor((espaco_disponivel + 1e-9) / fracao_unidade))
+            while qtd_restante > 0:
+                espaco_disponivel = 1.0 - capacidade_usada_fracao
+                caixas_que_cabem = int(np.floor((espaco_disponivel + 1e-9) / fracao_unidade))
 
-                    # Se atingiu o limite do pallet atual, inicia outro pallet para este mesmo tipo de caixa
-                    if caixas_que_cabem == 0:
-                        pallet_id += 1
-                        misto_atual_id = f"Pallet {pallet_id} (Misto)"
-                        capacidade_usada_fracao = 0.0
-                        caixas_que_cabem = int(np.floor((1.0 + 1e-9) / fracao_unidade))
+                # Se o pallet misto atual encheu (capacidade = 1.0), abre o próximo pallet misto
+                if caixas_que_cabem == 0:
+                    pallet_id += 1
+                    misto_atual_id = f"Pallet {pallet_id} (Misto)"
+                    capacidade_usada_fracao = 0.0
+                    caixas_que_cabem = int(np.floor((1.0 + 1e-9) / fracao_unidade))
 
-                    qtd_alocar = min(qtd_restante, caixas_que_cabem)
-                    fracao_alocada = qtd_alocar * fracao_unidade
+                qtd_alocar = min(qtd_restante, caixas_que_cabem)
+                fracao_alocada = qtd_alocar * fracao_unidade
 
-                    pallets_lista.append({
-                        'ID': misto_atual_id,
-                        'Tipo': "Misto 🟡",
-                        'SKU': sku,
-                        'Produto': prod_nome,
-                        'Qtd Caixas': qtd_alocar,
-                        'Nº Caixa': num_caixa,
-                        'Ordem_Caixa': ordem_cx,
-                        'Capacidade_Max': cap_max
-                    })
+                pallets_lista.append({
+                    'ID': misto_atual_id,
+                    'Tipo': "Misto 🟡",
+                    'SKU': sku,
+                    'Produto': prod_nome,
+                    'Qtd Caixas': qtd_alocar,
+                    'Nº Caixa': num_caixa,
+                    'Ordem_Caixa': ordem_cx,
+                    'Capacidade_Max': cap_max
+                })
 
-                    capacidade_usada_fracao += fracao_alocada
-                    qtd_restante -= qtd_alocar
-                    pallet_usado = True
-
-            # Incrementa o contador de ID de pallet após encerrar o grupo do tipo de caixa atual
-            if pallet_usado:
-                pallet_id += 1
+                capacidade_usada_fracao += fracao_alocada
+                qtd_restante -= qtd_alocar
 
     return pd.DataFrame(pallets_lista)
 
