@@ -37,6 +37,7 @@ st.markdown(
 
 # --- CABEÇALHO DA PÁGINA ---
 st.title("📦 Sistema de Paletização - COMEX")
+st.caption("Gestão de Paletização e Módulo Logístico Mustad")
 st.markdown("---")
 
 # --- 2. CONSTANTES E DIMENSÕES DAS CAIXAS (em metros) ---
@@ -128,6 +129,7 @@ st.sidebar.info(f"""
 • **Caixa Tipo:** {prod_info['NUMERO DA CAIXA']}  
 • **Peças/Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
 • **Capacidade Pallet Fechado:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx  
+• **Dimensão Pallet:** 0,75m x 1,20m
 """)
 
 qtd_solicitada = st.sidebar.number_input(
@@ -370,10 +372,9 @@ def processar_pallets_operador(carrinho, df_produtos):
     return pd.DataFrame(pallets_lista)
 
 
-# --- 8. GERADOR DE MODELO 3D ---
+# --- 8. GERADOR DE MODELO 3D (FUNÇÃO MANTIDA MAS NÃO EXIBIDA) ---
 def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     fig = go.Figure()
-
     paleta_cores = [
         "#0055B8",
         "#10B981",
@@ -508,13 +509,14 @@ def gerar_pdf(df_pallets, cliente, data_str):
 
     # Título Principal
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "MUSTAD - Relatório de Paletização", align="C")
+    pdf.cell(0, 10, "MUSTAD - Relatorio de Paletizacao", align="C")
     pdf.ln(7)
     pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 5, "Pallet Fumigado (0,75m x 1,20m)", align="C")
     pdf.ln(8)
 
     # Nome do Cliente e Data
-    nome_cliente_formatado = cliente.strip() if cliente else "Não Informado"
+    nome_cliente_formatado = cliente.strip() if cliente else "Nao Informado"
     cliente_pdf = nome_cliente_formatado.encode("latin-1", "replace").decode(
         "latin-1"
     )
@@ -576,7 +578,7 @@ def gerar_pdf(df_pallets, cliente, data_str):
 
 
 # --- 10. EXECUÇÃO E RESULTADOS ---
-if st.button("⚙️ CALCULAR E GERAR PALLETS 3D"):
+if st.button("⚙️ CALCULAR E GERAR PALLETS"):
     if not st.session_state.carrinho:
         st.warning("Adicione itens ao pedido antes de calcular.")
     else:
@@ -602,7 +604,6 @@ if st.session_state.processado and st.session_state.carrinho:
             cliente_informado = nome_cliente_input.strip()
 
             if cliente_informado:
-                # Remove apenas caracteres proibidos em nomes de arquivos no S.O.
                 cliente_limpo = re.sub(r'[\\/*?:"<>|]', "", cliente_informado)
             else:
                 cliente_limpo = "CLIENTE"
@@ -636,17 +637,12 @@ if st.session_state.processado and st.session_state.carrinho:
             f"📌 {p_id} - Total: {total_cx} caixas ({tipo_pallet})",
             expanded=True,
         ):
-            col_tabela, col_3d = st.columns([1, 1])
+            st.markdown("**Composição das Caixas:**")
+            st.dataframe(
+                df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas"]],
+                use_container_width=True,
+            )
 
-            with col_tabela:
-                st.markdown("**Composição das Caixas:**")
-                st.dataframe(
-                    df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas"]],
-                    use_container_width=True,
-                )
-
-            with col_3d:
-                fig_3d = gerar_grafico_3d_otimizado(
-                    df_p, f"Estrutura 3D - {p_id}"
-                )
-                st.plotly_chart(fig_3d, use_container_width=True)
+            # --- VISUALIZAÇÃO 3D OCULTADA TEMPORARIAMENTE ---
+            # fig_3d = gerar_grafico_3d_otimizado(df_p, f"Estrutura 3D - {p_id}")
+            # st.plotly_chart(fig_3d, use_container_width=True)
