@@ -35,20 +35,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-# --- CABEÇALHO COM LOGO E TÍTULO ---
-col_logo, col_titulo = st.columns([1, 4])
-
-with col_logo:
-    if os.path.exists(CAMINHO_LOGO):
-        st.image(CAMINHO_LOGO, width=130)
-    else:
-        st.warning(f"Logo '{CAMINHO_LOGO}' não encontrada.")
-
-with col_titulo:
-    st.title("📦 Sistema de Paletização - COMEX")
-    st.caption("Gestão de Paletização e Módulo Logístico Mustad")
-
+# --- CABEÇALHO DA PÁGINA ---
+st.title("📦 Sistema de Paletização - COMEX")
+st.caption("Gestão de Paletização e Módulo Logístico Mustad")
 st.markdown("---")
 
 # --- 2. CONSTANTES E DIMENSÕES DAS CAIXAS (em metros) ---
@@ -126,9 +115,6 @@ if "processado" not in st.session_state:
     st.session_state.processado = False
 
 # --- 5. PAINEL LATERAL (INSERÇÃO DO PEDIDO) ---
-if os.path.exists(CAMINHO_LOGO):
-    st.sidebar.image(CAMINHO_LOGO, width=160)
-
 st.sidebar.header("📋 Inserir Pedido")
 opcoes_produtos = df_produtos["SKU"] + " - " + df_produtos["NOME DO PRODUTO"]
 produto_selecionado = st.sidebar.selectbox(
@@ -517,14 +503,10 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     return fig
 
 
-# --- 9. GERADOR DE PDF CORRIGIDO ---
+# --- 9. GERADOR DE PDF ---
 def gerar_pdf(df_pallets, cliente, data_str):
     pdf = FPDF()
     pdf.add_page()
-
-    # Logo Mustad no PDF
-    if os.path.exists(CAMINHO_LOGO):
-        pdf.image(CAMINHO_LOGO, x=10, y=8, w=22)
 
     # Título Principal
     pdf.set_font("Helvetica", "B", 16)
@@ -534,7 +516,7 @@ def gerar_pdf(df_pallets, cliente, data_str):
     pdf.cell(0, 5, "Pallet Fumigado (0,75m x 1,20m)", align="C")
     pdf.ln(8)
 
-    # Tratamento e inclusão explícita do Nome do Cliente no PDF
+    # Nome do Cliente e Data
     nome_cliente_formatado = cliente.strip() if cliente else "Nao Informado"
     cliente_pdf = nome_cliente_formatado.encode("latin-1", "replace").decode(
         "latin-1"
@@ -614,26 +596,25 @@ if st.session_state.processado and st.session_state.carrinho:
 
     if FPDF_DISPONIVEL:
         try:
-            # 1. Datas
+            # Data
             data_atual = datetime.now()
             data_formatada_pdf = data_atual.strftime("%d/%m/%Y")
             data_formatada_arquivo = data_atual.strftime("%d-%m-%Y")
 
-            # 2. Captura garantida do Nome do Cliente
+            # Nome do Cliente Sanitizado
             cliente_informado = nome_cliente_input.strip()
 
             if cliente_informado:
-                # Transforma caracteres especiais e espaços em _ para o arquivo
                 cliente_sanitizado = re.sub(
                     r"[^A-Za-z0-9_]", "_", cliente_informado
                 ).upper()
             else:
                 cliente_sanitizado = "CLIENTE"
 
-            # 3. Nome de arquivo formatado com Cliente e Data
+            # Nome do Arquivo PDF
             nome_arquivo_pdf = f"PALETIZACAO_{cliente_sanitizado}_{data_formatada_arquivo}.pdf"
 
-            # 4. Geração do PDF
+            # Geração do PDF
             pdf_bytes = gerar_pdf(
                 df_pallets, cliente_informado, data_formatada_pdf
             )
