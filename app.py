@@ -37,7 +37,6 @@ st.markdown(
 
 # --- CABEÇALHO DA PÁGINA ---
 st.title("📦 Sistema de Paletização - COMEX")
-st.caption("Gestão de Paletização")
 st.markdown("---")
 
 # --- 2. CONSTANTES E DIMENSÕES DAS CAIXAS (em metros) ---
