@@ -37,7 +37,7 @@ st.markdown(
 
 # --- CABEÇALHO DA PÁGINA ---
 st.title("📦 Sistema de Paletização - COMEX")
-st.caption("Gestão de Paletização e Módulo Logístico Mustad")
+st.caption("Gestão de Paletização")
 st.markdown("---")
 
 # --- 2. CONSTANTES E DIMENSÕES DAS CAIXAS (em metros) ---
@@ -510,14 +510,13 @@ def gerar_pdf(df_pallets, cliente, data_str):
 
     # Título Principal
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "MUSTAD - Relatorio de Paletizacao", align="C")
+    pdf.cell(0, 10, "MUSTAD - Relatório de Paletização", align="C")
     pdf.ln(7)
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 5, "Pallet Fumigado (0,75m x 1,20m)", align="C")
     pdf.ln(8)
 
     # Nome do Cliente e Data
-    nome_cliente_formatado = cliente.strip() if cliente else "Nao Informado"
+    nome_cliente_formatado = cliente.strip() if cliente else "Não Informado"
     cliente_pdf = nome_cliente_formatado.encode("latin-1", "replace").decode(
         "latin-1"
     )
