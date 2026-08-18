@@ -48,7 +48,7 @@ with col_logo:
 
 with col_titulo:
     st.title("📦 Sistema de Paletização - COMEX")
-    st.caption("Gestão de Paletização e Módulo Logístico Mustad")
+    st.caption("Gestão de Paletização Mustad")
 
 
 # --- 2. CONSTANTES E DIMENSÕES DAS CAIXAS (em metros) ---
