@@ -1,4 +1,6 @@
+from datetime import datetime
 import os
+import re
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -141,7 +143,13 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
     st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
 
-# --- 6. EXIBIÇÃO DO CARRINHO DE COMPRAS ---
+# --- 6. IDENTIFICAÇÃO DO CLIENTE E EXIBIÇÃO DO CARRINHO ---
+nome_cliente = st.text_input(
+    "👤 Nome do Cliente:",
+    placeholder="Digite o nome do cliente aqui...",
+    key="nome_cliente_input",
+)
+
 st.subheader("🛒 Itens do Pedido Atual")
 
 if st.session_state.carrinho:
@@ -480,7 +488,7 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
 
 
 # --- 9. GERADOR DE PDF ---
-def gerar_pdf(df_pallets):
+def gerar_pdf(df_pallets, cliente, data_str):
     pdf = FPDF()
     pdf.add_page()
 
@@ -490,6 +498,16 @@ def gerar_pdf(df_pallets):
     pdf.ln(8)
     pdf.set_font("Helvetica", "", 11)
     pdf.cell(0, 5, "Pallet Fumigado 0,75m x 1,20m", align="C")
+    pdf.ln(8)
+
+    # Informações do Cliente e Data
+    cliente_pdf = (
+        cliente.encode("latin-1", "replace").decode("latin-1")
+        if cliente
+        else "Nao informado"
+    )
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 5, f"Cliente: {cliente_pdf} | Data: {data_str}", align="C")
     pdf.ln(12)
 
     pallets_unicos = df_pallets["ID"].unique()
@@ -559,11 +577,23 @@ if st.session_state.processado and st.session_state.carrinho:
 
     if FPDF_DISPONIVEL:
         try:
-            pdf_bytes = gerar_pdf(df_pallets)
+            # Captura e formatação da data atual
+            data_atual = datetime.now()
+            data_formatada_pdf = data_atual.strftime("%d/%m/%Y")
+            data_formatada_arquivo = data_atual.strftime("%d-%m-%Y")
+
+            # Tratamento do nome do cliente para uso seguro em nomes de arquivo
+            cliente_str = nome_cliente.strip() if nome_cliente.strip() else "CLIENTE"
+            cliente_sanitizado = re.sub(r'[^A-Za-z0-9_]', '_', cliente_str).upper()
+
+            # Nome final do arquivo conforme solicitado
+            nome_arquivo_pdf = f"PALETIZACAO_{cliente_sanitizado}_{data_formatada_arquivo}.pdf"
+
+            pdf_bytes = gerar_pdf(df_pallets, nome_cliente, data_formatada_pdf)
             st.download_button(
                 label="📄 Baixar Relatório em PDF",
                 data=pdf_bytes,
-                file_name="plano_de_paletizacao.pdf",
+                file_name=nome_arquivo_pdf,
                 mime="application/pdf",
             )
         except Exception as err:
