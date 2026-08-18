@@ -340,19 +340,19 @@ def processar_pallets_operador(carrinho, df_produtos):
     return pd.DataFrame(pallets_lista)
 
 
-# --- 8. GERADOR DE MODELO 3D (THREE.JS / WEBGL) ---
+# --- 8. GERADOR DE MODELO 3D (THREE.JS COM AUTO-START) ---
 def gerar_visualizacao_3d_threejs(df_pallet_especifico):
     df_ordenado = df_pallet_especifico.sort_values(
         by=["Ordem_Caixa", "SKU"], ascending=[False, True]
     )
 
     paleta_cores = [
-        "#3B82F6",
-        "#10B981",
-        "#EF4444",
-        "#8B5CF6",
-        "#F59E0B",
-        "#D9A036",
+        "#2563EB",
+        "#059669",
+        "#DC2626",
+        "#7C3AED",
+        "#D97706",
+        "#4B5563",
     ]
     skus_unicos = list(df_pallet_especifico["SKU"].unique())
     cor_map = {
@@ -405,7 +405,7 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico):
             caixas_json.append(
                 {
                     "x": round(x0, 4),
-                    "y": round(z0, 4),  # Y é a altura no Three.js
+                    "y": round(z0, 4),
                     "z": round(y0, 4),
                     "dx": round(dx * 0.98, 4),
                     "dy": round(dz * 0.98, 4),
@@ -425,10 +425,11 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico):
     <!DOCTYPE html>
     <html>
     <head>
+        <meta charset="utf-8">
         <style>
-            body {{ margin: 0; overflow: hidden; background-color: #0e1117; font-family: sans-serif; }}
-            #canvas-container {{ width: 100vw; height: 480px; position: relative; }}
-            #controls {{ position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 8px; }}
+            body {{ margin: 0; padding: 0; overflow: hidden; background-color: #0e1117; font-family: sans-serif; }}
+            #canvas-container {{ width: 100%; height: 480px; position: relative; }}
+            #controls {{ position: absolute; top: 10px; left: 10px; z-index: 10; }}
             button {{
                 background: #262730; color: #FAFAFA; border: 1px solid #4B4B4B;
                 padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: 600;
@@ -437,131 +438,128 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico):
             button:hover {{ background: #FF4B4B; border-color: #FF4B4B; }}
             #info {{ position: absolute; bottom: 8px; left: 10px; color: #A0A0A0; font-size: 11px; }}
         </style>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+        <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+        <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     </head>
     <body>
         <div id="canvas-container">
             <div id="controls">
-                <button onclick="iniciarAnimacao()">▶ Animar Empilhamento</button>
                 <button onclick="resetarCamera()">🎥 Resetar Câmera</button>
             </div>
             <div id="info">💡 Arraste com o mouse para girar | Scroll para zoom</div>
         </div>
 
         <script>
-            const caixasData = {data_json_str};
-            
-            const container = document.getElementById('canvas-container');
-            const scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x0e1117);
-
-            const camera = new THREE.PerspectiveCamera(45, container.clientWidth / 480, 0.1, 100);
-            camera.position.set(2.5, 2.0, 2.5);
-
-            const renderer = new THREE.WebGLRenderer({{ antialias: true, alpha: true }});
-            renderer.setSize(container.clientWidth, 480);
-            renderer.setPixelRatio(window.devicePixelRatio);
-            renderer.shadowMap.enabled = true;
-            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-            container.appendChild(renderer.domElement);
-
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.05;
-            controls.target.set(0.6, 0.4, 0.375);
-
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-            scene.add(ambientLight);
-
-            const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
-            dirLight.position.set(3, 5, 2);
-            dirLight.castShadow = true;
-            dirLight.shadow.mapSize.width = 1024;
-            dirLight.shadow.mapSize.height = 1024;
-            scene.add(dirLight);
-
-            const gridHelper = new THREE.GridHelper(5, 20, 0x444444, 0x222222);
-            gridHelper.position.set(0.6, -0.06, 0.375);
-            scene.add(gridHelper);
-
-            const palletGeo = new THREE.BoxGeometry(1.20, 0.05, 0.75);
-            const palletMat = new THREE.MeshStandardMaterial({{ color: 0x8B5A2B, roughness: 0.8 }});
-            const palletMesh = new THREE.Mesh(palletGeo, palletMat);
-            palletMesh.position.set(0.6, -0.025, 0.375);
-            palletMesh.receiveShadow = true;
-            palletMesh.castShadow = true;
-            scene.add(palletMesh);
-
-            const boxMeshes = [];
-            caixasData.forEach((item, index) => {{
-                const geo = new THREE.BoxGeometry(item.dx, item.dy, item.dz);
-                
-                const mat = new THREE.MeshStandardMaterial({{
-                    color: new THREE.Color(item.cor),
-                    roughness: 0.4,
-                    metalness: 0.1
-                }});
-                
-                const mesh = new THREE.Mesh(geo, mat);
-                mesh.castShadow = true;
-                mesh.receiveShadow = true;
-
-                const edges = new THREE.EdgesGeometry(geo);
-                const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({{ color: 0x000000, linewidth: 1 }}));
-                mesh.add(line);
-
-                mesh.userData = {{
-                    targetY: item.y,
-                    startY: item.y + 1.5,
-                    index: index
-                }};
-
-                mesh.position.set(item.x, item.userData.startY, item.z);
-                mesh.visible = true;
-                
-                scene.add(mesh);
-                boxMeshes.push(mesh);
-            }});
-
-            boxMeshes.forEach(m => m.position.y = m.userData.targetY);
-
-            let animando = false;
+            let camera, scene, renderer, controls;
+            let boxMeshes = [];
             let currentStep = 0;
+            let animando = true;
+            const caixasData = {data_json_str};
 
-            function iniciarAnimacao() {{
-                animando = true;
-                currentStep = 0;
-                boxMeshes.forEach(m => {{
-                    m.position.y = m.userData.startY;
-                    m.visible = false;
+            function init() {{
+                const container = document.getElementById('canvas-container');
+                scene = new THREE.Scene();
+                scene.background = new THREE.Color(0x0e1117);
+
+                camera = new THREE.PerspectiveCamera(45, container.clientWidth / 480, 0.1, 100);
+                camera.position.set(2.5, 2.0, 2.5);
+
+                renderer = new THREE.WebGLRenderer({{ antialias: true }});
+                renderer.setSize(container.clientWidth, 480);
+                renderer.setPixelRatio(window.devicePixelRatio);
+                renderer.shadowMap.enabled = true;
+                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                container.appendChild(renderer.domElement);
+
+                controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+                controls.target.set(0.6, 0.4, 0.375);
+
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+                scene.add(ambientLight);
+
+                const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                dirLight.position.set(3, 5, 2);
+                dirLight.castShadow = true;
+                scene.add(dirLight);
+
+                const gridHelper = new THREE.GridHelper(5, 20, 0x444444, 0x222222);
+                gridHelper.position.set(0.6, -0.06, 0.375);
+                scene.add(gridHelper);
+
+                // Pallet Base
+                const palletGeo = new THREE.BoxGeometry(1.20, 0.05, 0.75);
+                const palletMat = new THREE.MeshStandardMaterial({{ color: 0x8B5A2B, roughness: 0.8 }});
+                const palletMesh = new THREE.Mesh(palletGeo, palletMat);
+                palletMesh.position.set(0.6, -0.025, 0.375);
+                palletMesh.receiveShadow = true;
+                scene.add(palletMesh);
+
+                // Criar caixas
+                caixasData.forEach((item, index) => {{
+                    const geo = new THREE.BoxGeometry(item.dx, item.dy, item.dz);
+                    const mat = new THREE.MeshStandardMaterial({{
+                        color: new THREE.Color(item.cor),
+                        roughness: 0.4,
+                        metalness: 0.1
+                    }});
+                    
+                    const mesh = new THREE.Mesh(geo, mat);
+                    mesh.castShadow = true;
+                    mesh.receiveShadow = true;
+
+                    const edges = new THREE.EdgesGeometry(geo);
+                    const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({{ color: 0x000000, linewidth: 1 }}));
+                    mesh.add(line);
+
+                    mesh.userData = {{
+                        targetY: item.y,
+                        startY: item.y + 1.8,
+                        index: index
+                    }};
+
+                    mesh.position.set(item.x, mesh.userData.startY, item.z);
+                    mesh.visible = false;
+                    
+                    scene.add(mesh);
+                    boxMeshes.push(mesh);
                 }});
+
+                animate();
             }}
 
             function resetarCamera() {{
-                camera.position.set(2.5, 2.0, 2.5);
-                controls.target.set(0.6, 0.4, 0.375);
+                if (camera && controls) {{
+                    camera.position.set(2.5, 2.0, 2.5);
+                    controls.target.set(0.6, 0.4, 0.375);
+                }}
             }}
 
             function animate() {{
                 requestAnimationFrame(animate);
-                controls.update();
+                if (controls) controls.update();
 
                 if (animando && currentStep < boxMeshes.length) {{
                     const m = boxMeshes[currentStep];
                     m.visible = true;
-                    m.position.y -= (m.position.y - m.userData.targetY) * 0.15;
+                    m.position.y -= (m.position.y - m.userData.targetY) * 0.18;
 
-                    if (Math.abs(m.position.y - m.userData.targetY) < 0.01) {{
+                    if (Math.abs(m.position.y - m.userData.targetY) < 0.008) {{
                         m.position.y = m.userData.targetY;
                         currentStep++;
                     }}
                 }}
 
-                renderer.render(scene, camera);
+                if (renderer && scene && camera) {{
+                    renderer.render(scene, camera);
+                }}
             }}
 
-            animate();
+            window.addEventListener('load', init);
+            if (document.readyState === 'complete') {{
+                init();
+            }}
         </script>
     </body>
     </html>
@@ -661,7 +659,6 @@ if st.button("⚙️ CALCULAR E GERAR PALLETS 3D", type="primary"):
 
         st.markdown("---")
 
-        # Exibição direta dos Pallets (renderização WebGL no carregamento)
         for p_id in pallets_unicos:
             df_p = df_pallets[df_pallets["ID"] == p_id]
             tipo_pallet = df_p["Tipo"].iloc[0]
