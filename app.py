@@ -511,7 +511,6 @@ def gerar_pdf(df_pallets, cliente, data_str):
     pdf.cell(0, 10, "MUSTAD - Relatório de Paletização", align="C")
     pdf.ln(7)
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 5, "Pallet Fumigado (0,75m x 1,20m)", align="C")
     pdf.ln(8)
 
     # Nome do Cliente e Data
