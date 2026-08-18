@@ -19,16 +19,18 @@ st.set_page_config(
     page_title="Sistema de Paletização - MUSTAD", page_icon="📦", layout="wide"
 )
 
-# Estilização CSS personalizada com a paleta da Mustad
+# Caminho da logo
+CAMINHO_LOGO = "Logo_mustad.png"
+
+# CSS para o campo do cliente em destaque
 st.markdown(
     """
     <style>
-    /* Estilização do container do Nome do Cliente */
-    div[data-testid="stVerticalBlock"] > div.cliente-highlight {
+    .cliente-box {
         background-color: #EBF3FA;
         border-left: 6px solid #0055B8;
+        padding: 15px 20px;
         border-radius: 6px;
-        padding: 15px;
         margin-bottom: 20px;
     }
     </style>
@@ -36,20 +38,21 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Caminho da logo
-CAMINHO_LOGO = "Logo_mustad.png"
 
 # --- CABEÇALHO COM LOGO E TÍTULO ---
-col_logo, col_titulo = st.columns([1, 5])
+col_logo, col_titulo = st.columns([1, 4])
 
 with col_logo:
     if os.path.exists(CAMINHO_LOGO):
-        st.image(CAMINHO_LOGO, width=110)
+        st.image(CAMINHO_LOGO, width=130)
+    else:
+        st.warning(f"Logo '{CAMINHO_LOGO}' não encontrada.")
 
 with col_titulo:
     st.title("📦 Sistema de Paletização - COMEX")
-    st.caption("Gestão de Paletização Mustad")
+    st.caption("Gestão de Paletização e Módulo Logístico Mustad")
 
+st.markdown("---")
 
 # --- 2. CONSTANTES E DIMENSÕES DAS CAIXAS (em metros) ---
 DIMENSOES_CAIXAS = {
@@ -98,7 +101,6 @@ def carregar_base(caminho_excel):
     return df
 
 
-# Localização do arquivo Excel
 caminhos_possiveis = ["COMEX.xlsx", "data/COMEX.xlsx"]
 CAMINHO_EXCEL = None
 
@@ -110,9 +112,6 @@ for c in caminhos_possiveis:
 if not CAMINHO_EXCEL:
     st.error(
         "⚠️ O arquivo 'COMEX.xlsx' não foi encontrado no diretório do projeto."
-    )
-    st.info(
-        "Certifique-se de que o arquivo 'COMEX.xlsx' está salvo na raiz do projeto ou na pasta 'data/'."
     )
     st.stop()
 
@@ -131,7 +130,7 @@ if "processado" not in st.session_state:
 
 # --- 5. PAINEL LATERAL (INSERÇÃO DO PEDIDO) ---
 if os.path.exists(CAMINHO_LOGO):
-    st.sidebar.image(CAMINHO_LOGO, use_container_width=True)
+    st.sidebar.image(CAMINHO_LOGO, width=160)
 
 st.sidebar.header("📋 Inserir Pedido")
 opcoes_produtos = df_produtos["SKU"] + " - " + df_produtos["NOME DO PRODUTO"]
@@ -147,6 +146,7 @@ st.sidebar.info(f"""
 • **Caixa Tipo:** {prod_info['NUMERO DA CAIXA']}  
 • **Peças/Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
 • **Capacidade Pallet Fechado:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx  
+• **Dimensão Pallet:** 0,75m x 1,20m
 """)
 
 qtd_solicitada = st.sidebar.number_input(
@@ -175,21 +175,20 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
     st.sidebar.success("Item adicionado ao pedido!")
 
 # --- 6. IDENTIFICAÇÃO DO CLIENTE COM DESTAQUE VISUAL ---
-st.write("")
 st.markdown(
     """
-<div style="background-color: #EBF3FA; border-left: 6px solid #0055B8; padding: 12px 18px; border-radius: 6px; margin-bottom: 15px;">
+<div class="cliente-box">
     <h4 style="color: #0055B8; margin: 0 0 5px 0;">👤 Identificação do Cliente</h4>
-    <p style="color: #333; margin: 0; font-size: 0.9em;">Preencha o campo abaixo antes de gerar o relatório em PDF.</p>
+    <p style="color: #333; margin: 0 0 10px 0; font-size: 0.9em;">Preencha o nome do cliente para personalizar o relatório PDF final.</p>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
-nome_cliente = st.text_input(
+nome_cliente_input = st.text_input(
     "Nome do Cliente / Razão Social:",
-    placeholder="Ex: Cliente X / Distribuidora Y",
-    key="input_nome_cliente",
+    placeholder="Ex: Distribuidora Silva",
+    key="nome_cliente_key",
 )
 
 st.subheader("🛒 Itens do Pedido Atual")
@@ -521,31 +520,34 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     return fig
 
 
-# --- 9. GERADOR DE PDF ---
+# --- 9. GERADOR DE PDF CORRIGIDO ---
 def gerar_pdf(df_pallets, cliente, data_str):
     pdf = FPDF()
     pdf.add_page()
 
     # Logo Mustad no PDF
     if os.path.exists(CAMINHO_LOGO):
-        pdf.image(CAMINHO_LOGO, x=10, y=8, w=20)
+        pdf.image(CAMINHO_LOGO, x=10, y=8, w=22)
 
-    # Título
+    # Título Principal
     pdf.set_font("Helvetica", "B", 16)
     pdf.cell(0, 10, "MUSTAD - Relatorio de Paletizacao", align="C")
-    pdf.ln(8)
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 5, "Pallet Fumigado 0,75m x 1,20m", align="C")
+    pdf.ln(7)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 5, "Pallet Fumigado (0,75m x 1,20m)", align="C")
     pdf.ln(8)
 
-    # Informações do Cliente e Data
-    cliente_pdf = (
-        cliente.encode("latin-1", "replace").decode("latin-1")
-        if cliente
-        else "Nao informado"
+    # Tratamento e inclusão explícita do Nome do Cliente no PDF
+    nome_cliente_formatado = cliente.strip() if cliente else "Nao Informado"
+    cliente_pdf = nome_cliente_formatado.encode("latin-1", "replace").decode(
+        "latin-1"
     )
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(0, 5, f"Cliente: {cliente_pdf} | Data: {data_str}", align="C")
+
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 6, f"Cliente: {cliente_pdf}", align="C")
+    pdf.ln(5)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 5, f"Data de Emissao: {data_str}", align="C")
     pdf.ln(12)
 
     pallets_unicos = df_pallets["ID"].unique()
@@ -615,26 +617,29 @@ if st.session_state.processado and st.session_state.carrinho:
 
     if FPDF_DISPONIVEL:
         try:
-            # 1. Data Atual
+            # 1. Datas
             data_atual = datetime.now()
             data_formatada_pdf = data_atual.strftime("%d/%m/%Y")
             data_formatada_arquivo = data_atual.strftime("%d-%m-%Y")
 
-            # 2. Captura do Nome do Cliente
-            cliente_input = st.session_state.get("input_nome_cliente", "").strip()
-            if not cliente_input:
-                cliente_input = nome_cliente.strip()
+            # 2. Captura garantida do Nome do Cliente
+            cliente_informado = nome_cliente_input.strip()
 
-            if cliente_input:
-                cliente_sanitizado = re.sub(r'[^A-Za-z0-9_]', '_', cliente_input).upper()
+            if cliente_informado:
+                # Transforma caracteres especiais e espaços em _ para o arquivo
+                cliente_sanitizado = re.sub(
+                    r"[^A-Za-z0-9_]", "_", cliente_informado
+                ).upper()
             else:
                 cliente_sanitizado = "CLIENTE"
 
-            # 3. Nome do Arquivo Dinâmico
+            # 3. Nome de arquivo formatado com Cliente e Data
             nome_arquivo_pdf = f"PALETIZACAO_{cliente_sanitizado}_{data_formatada_arquivo}.pdf"
 
             # 4. Geração do PDF
-            pdf_bytes = gerar_pdf(df_pallets, cliente_input, data_formatada_pdf)
+            pdf_bytes = gerar_pdf(
+                df_pallets, cliente_informado, data_formatada_pdf
+            )
 
             st.download_button(
                 label="📄 Baixar Relatório em PDF",
