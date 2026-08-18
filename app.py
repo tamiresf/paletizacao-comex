@@ -372,9 +372,10 @@ def processar_pallets_operador(carrinho, df_produtos):
     return pd.DataFrame(pallets_lista)
 
 
-# --- 8. GERADOR DE MODELO 3D (FUNÇÃO MANTIDA MAS NÃO EXIBIDA) ---
+# --- 8. GERADOR DE MODELO 3D (DESATIVADO NA EXIBIÇÃO) ---
 def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     fig = go.Figure()
+
     paleta_cores = [
         "#0055B8",
         "#10B981",
@@ -637,12 +638,13 @@ if st.session_state.processado and st.session_state.carrinho:
             f"📌 {p_id} - Total: {total_cx} caixas ({tipo_pallet})",
             expanded=True,
         ):
+            # A exibição da coluna 3D foi removida e a tabela ocupa 100% da largura
             st.markdown("**Composição das Caixas:**")
             st.dataframe(
                 df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas"]],
                 use_container_width=True,
             )
 
-            # --- VISUALIZAÇÃO 3D OCULTADA TEMPORARIAMENTE ---
+            # --- RENDERIZAÇÃO 3D TEMPORARIAMENTE OCULTADA ---
             # fig_3d = gerar_grafico_3d_otimizado(df_p, f"Estrutura 3D - {p_id}")
             # st.plotly_chart(fig_3d, use_container_width=True)
