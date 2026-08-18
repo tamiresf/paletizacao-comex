@@ -523,7 +523,7 @@ def gerar_pdf(df_pallets, cliente, data_str):
     pdf.cell(0, 6, f"Cliente: {cliente_pdf}", align="C")
     pdf.ln(5)
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 5, f"Data de Emissao: {data_str}", align="C")
+    pdf.cell(0, 5, f"Data de Emissão: {data_str}", align="C")
     pdf.ln(12)
 
     pallets_unicos = df_pallets["ID"].unique()
