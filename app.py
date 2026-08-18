@@ -16,10 +16,39 @@ except ImportError:
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Sistema de Paletização - COMEX", page_icon="📦", layout="wide"
+    page_title="Sistema de Paletização - MUSTAD", page_icon="📦", layout="wide"
 )
 
-st.title("📦 Sistema de Paletização")
+# Estilização CSS personalizada com a paleta da Mustad
+st.markdown(
+    """
+    <style>
+    /* Estilização do container do Nome do Cliente */
+    div[data-testid="stVerticalBlock"] > div.cliente-highlight {
+        background-color: #EBF3FA;
+        border-left: 6px solid #0055B8;
+        border-radius: 6px;
+        padding: 15px;
+        margin-bottom: 20px;
+    }
+    </style>
+""",
+    unsafe_allow_html=True,
+)
+
+# Caminho da logo
+CAMINHO_LOGO = "Logo_mustad.png"
+
+# --- CABEÇALHO COM LOGO E TÍTULO ---
+col_logo, col_titulo = st.columns([1, 5])
+
+with col_logo:
+    if os.path.exists(CAMINHO_LOGO):
+        st.image(CAMINHO_LOGO, width=110)
+
+with col_titulo:
+    st.title("📦 Sistema de Paletização - COMEX")
+    st.caption("Gestão de Paletização e Módulo Logístico Mustad")
 
 
 # --- 2. CONSTANTES E DIMENSÕES DAS CAIXAS (em metros) ---
@@ -101,6 +130,9 @@ if "processado" not in st.session_state:
     st.session_state.processado = False
 
 # --- 5. PAINEL LATERAL (INSERÇÃO DO PEDIDO) ---
+if os.path.exists(CAMINHO_LOGO):
+    st.sidebar.image(CAMINHO_LOGO, use_container_width=True)
+
 st.sidebar.header("📋 Inserir Pedido")
 opcoes_produtos = df_produtos["SKU"] + " - " + df_produtos["NOME DO PRODUTO"]
 produto_selecionado = st.sidebar.selectbox(
@@ -143,11 +175,22 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
     st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
 
-# --- 6. IDENTIFICAÇÃO DO CLIENTE E EXIBIÇÃO DO CARRINHO ---
+# --- 6. IDENTIFICAÇÃO DO CLIENTE COM DESTAQUE VISUAL ---
+st.write("")
+st.markdown(
+    """
+<div style="background-color: #EBF3FA; border-left: 6px solid #0055B8; padding: 12px 18px; border-radius: 6px; margin-bottom: 15px;">
+    <h4 style="color: #0055B8; margin: 0 0 5px 0;">👤 Identificação do Cliente</h4>
+    <p style="color: #333; margin: 0; font-size: 0.9em;">Preencha o campo abaixo antes de gerar o relatório em PDF.</p>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
 nome_cliente = st.text_input(
-    "👤 Nome do Cliente:",
-    placeholder="Digite o nome do cliente aqui...",
-    key="nome_cliente_input",
+    "Nome do Cliente / Razão Social:",
+    placeholder="Ex: Cliente X / Distribuidora Y",
+    key="input_nome_cliente",
 )
 
 st.subheader("🛒 Itens do Pedido Atual")
@@ -207,7 +250,6 @@ def processar_pallets_operador(carrinho, df_produtos):
     pallet_id = 1
     sobras_por_sku = []
 
-    # 1. Pallets Fechados e Separação das Sobras
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd = int(item["Qtd_Caixas"])
@@ -220,7 +262,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd_pallets_fechados = qtd // cap_pallet
         resto = qtd % cap_pallet
 
-        # Pallets Monoproduto Fechados
         for _ in range(qtd_pallets_fechados):
             pallets_lista.append({
                 "ID": f"Pallet {pallet_id}",
@@ -244,12 +285,10 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Capacidade_Max": cap_pallet,
             })
 
-    # 2. Consolidação Exclusiva por Tipo de Caixa
     if sobras_por_sku:
         df_sobras = pd.DataFrame(sobras_por_sku)
         sobras_finais_para_misturar = []
 
-        # Agrupa por tipo de caixa (Ordem_Caixa)
         for ordem_cx, df_grupo in df_sobras.groupby("Ordem_Caixa"):
             num_caixa_tipo = df_grupo["Nº Caixa"].iloc[0]
             cap_max_tipo = df_grupo["Capacidade_Max"].iloc[0]
@@ -271,7 +310,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                     )
 
                     if caixas_que_cabem == 0:
-                        # Pallet cheio do mesmo tipo
                         for it in itens_no_pallet_atual:
                             pallets_lista.append(it)
                         pallet_id += 1
@@ -297,17 +335,14 @@ def processar_pallets_operador(carrinho, df_produtos):
                     capacidade_usada += fracao_alocada
                     qtd_restante -= qtd_alocar
 
-            # Se o pallet do mesmo tipo encheu 100%, consolida.
             if abs(capacidade_usada - 1.0) < 1e-6:
                 for it in itens_no_pallet_atual:
                     pallets_lista.append(it)
                 pallet_id += 1
             else:
-                # Armazena as sobras remanescentes deste tipo de caixa
                 for it in itens_no_pallet_atual:
                     sobras_finais_para_misturar.append(it)
 
-        # 3. ÚLTIMO PALLET MISTO (Sobras incompletas de tipos diferentes)
         if sobras_finais_para_misturar:
             df_ultimas_sobras = pd.DataFrame(sobras_finais_para_misturar)
             df_ultimas_sobras = df_ultimas_sobras.sort_values(
@@ -361,7 +396,7 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     fig = go.Figure()
 
     paleta_cores = [
-        "#3B82F6",
+        "#0055B8",
         "#10B981",
         "#EF4444",
         "#8B5CF6",
@@ -457,7 +492,7 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
         idx += qtd_camada
         z_atual += dz
 
-    # Base do Pallet de Madeira
+    # Base do Pallet
     fig.add_trace(
         go.Mesh3d(
             x=[0, PALLET_COMP, PALLET_COMP, 0, 0, PALLET_COMP, PALLET_COMP, 0],
@@ -492,9 +527,13 @@ def gerar_pdf(df_pallets, cliente, data_str):
     pdf = FPDF()
     pdf.add_page()
 
+    # Logo Mustad no PDF
+    if os.path.exists(CAMINHO_LOGO):
+        pdf.image(CAMINHO_LOGO, x=10, y=8, w=20)
+
     # Título
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "Relatorio de Paletizacao - COMEX", align="C")
+    pdf.cell(0, 10, "MUSTAD - Relatorio de Paletizacao", align="C")
     pdf.ln(8)
     pdf.set_font("Helvetica", "", 11)
     pdf.cell(0, 5, "Pallet Fumigado 0,75m x 1,20m", align="C")
@@ -577,24 +616,33 @@ if st.session_state.processado and st.session_state.carrinho:
 
     if FPDF_DISPONIVEL:
         try:
-            # Captura e formatação da data atual
+            # 1. Data Atual
             data_atual = datetime.now()
             data_formatada_pdf = data_atual.strftime("%d/%m/%Y")
             data_formatada_arquivo = data_atual.strftime("%d-%m-%Y")
 
-            # Tratamento do nome do cliente para uso seguro em nomes de arquivo
-            cliente_str = nome_cliente.strip() if nome_cliente.strip() else "CLIENTE"
-            cliente_sanitizado = re.sub(r'[^A-Za-z0-9_]', '_', cliente_str).upper()
+            # 2. Captura do Nome do Cliente
+            cliente_input = st.session_state.get("input_nome_cliente", "").strip()
+            if not cliente_input:
+                cliente_input = nome_cliente.strip()
 
-            # Nome final do arquivo conforme solicitado
+            if cliente_input:
+                cliente_sanitizado = re.sub(r'[^A-Za-z0-9_]', '_', cliente_input).upper()
+            else:
+                cliente_sanitizado = "CLIENTE"
+
+            # 3. Nome do Arquivo Dinâmico
             nome_arquivo_pdf = f"PALETIZACAO_{cliente_sanitizado}_{data_formatada_arquivo}.pdf"
 
-            pdf_bytes = gerar_pdf(df_pallets, nome_cliente, data_formatada_pdf)
+            # 4. Geração do PDF
+            pdf_bytes = gerar_pdf(df_pallets, cliente_input, data_formatada_pdf)
+
             st.download_button(
                 label="📄 Baixar Relatório em PDF",
                 data=pdf_bytes,
                 file_name=nome_arquivo_pdf,
                 mime="application/pdf",
+                key="download_pdf_btn",
             )
         except Exception as err:
             st.error(f"Erro ao gerar PDF: {err}")
