@@ -14,13 +14,11 @@ except ImportError:
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Sistema de Paletização 3D - COMEX", page_icon="📦", layout="wide"
+    page_title="Sistema de Paletização - COMEX", page_icon="📦", layout="wide"
 )
 
-st.title("📦 Sistema de Paletização e Visualização 3D")
-st.caption(
-    "Pallet Fumigado (0,75m x 1,20m) — Regra de Separação Estreita de Tipos de Caixas"
-)
+st.title("📦 Sistema de Paletização")
+
 
 # --- 2. CONSTANTES E DIMENSÕES DAS CAIXAS (em metros) ---
 DIMENSOES_CAIXAS = {
