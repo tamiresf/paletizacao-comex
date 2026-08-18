@@ -1,9 +1,8 @@
-import json
 import os
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 
 # Importação condicional do FPDF
 try:
@@ -70,6 +69,7 @@ def carregar_base(caminho_excel):
     return df
 
 
+# Localização do arquivo Excel
 caminhos_possiveis = ["COMEX.xlsx", "data/COMEX.xlsx"]
 CAMINHO_EXCEL = None
 
@@ -96,6 +96,9 @@ except Exception as e:
 # --- 4. ESTADO DA SESSÃO ---
 if "carrinho" not in st.session_state:
     st.session_state.carrinho = []
+
+if "processado" not in st.session_state:
+    st.session_state.processado = False
 
 # --- 5. PAINEL LATERAL (INSERÇÃO DO PEDIDO) ---
 st.sidebar.header("📋 Inserir Pedido")
@@ -137,6 +140,7 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
             "Qtd_Caixas": qtd_solicitada,
             "Pecas_Por_Caixa": int(prod_info["QUANTIDADE DE PEÇAS"]),
         })
+    st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
 
 # --- 6. EXIBIÇÃO DO CARRINHO DE COMPRAS ---
@@ -165,6 +169,7 @@ if st.session_state.carrinho:
             "🗑️", key=f"remover_{index}_{item['SKU']}", help="Remover item"
         ):
             st.session_state.carrinho.pop(index)
+            st.session_state.processado = False
             st.rerun()
 
     st.markdown("---")
@@ -182,6 +187,7 @@ if st.session_state.carrinho:
         st.write("")
         if st.button("🔴 Limpar Pedido", use_container_width=True):
             st.session_state.carrinho = []
+            st.session_state.processado = False
             st.rerun()
 else:
     st.info("Nenhum item inserido no pedido até o momento.")
@@ -237,6 +243,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         df_sobras = pd.DataFrame(sobras_por_sku)
         sobras_finais_para_misturar = []
 
+        # Agrupa por tipo de caixa (Ordem_Caixa)
         for ordem_cx, df_grupo in df_sobras.groupby("Ordem_Caixa"):
             num_caixa_tipo = df_grupo["Nº Caixa"].iloc[0]
             cap_max_tipo = df_grupo["Capacidade_Max"].iloc[0]
@@ -258,6 +265,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                     )
 
                     if caixas_que_cabem == 0:
+                        # Pallet cheio do mesmo tipo
                         for it in itens_no_pallet_atual:
                             pallets_lista.append(it)
                         pallet_id += 1
@@ -283,11 +291,13 @@ def processar_pallets_operador(carrinho, df_produtos):
                     capacidade_usada += fracao_alocada
                     qtd_restante -= qtd_alocar
 
+            # Se o pallet do mesmo tipo encheu 100%, consolida.
             if abs(capacidade_usada - 1.0) < 1e-6:
                 for it in itens_no_pallet_atual:
                     pallets_lista.append(it)
                 pallet_id += 1
             else:
+                # Armazena as sobras remanescentes deste tipo de caixa
                 for it in itens_no_pallet_atual:
                     sobras_finais_para_misturar.append(it)
 
@@ -340,48 +350,64 @@ def processar_pallets_operador(carrinho, df_produtos):
     return pd.DataFrame(pallets_lista)
 
 
-# --- 8. GERADOR DE MODELO 3D (THREE.JS COM AUTO-START) ---
-def gerar_visualizacao_3d_threejs(df_pallet_especifico):
-    df_ordenado = df_pallet_especifico.sort_values(
-        by=["Ordem_Caixa", "SKU"], ascending=[False, True]
-    )
+# --- 8. GERADOR DE MODELO 3D ---
+def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
+    fig = go.Figure()
 
     paleta_cores = [
-        "#2563EB",
-        "#059669",
-        "#DC2626",
-        "#7C3AED",
-        "#D97706",
-        "#4B5563",
+        "#3B82F6",
+        "#10B981",
+        "#EF4444",
+        "#8B5CF6",
+        "#F59E0B",
+        "#D9A036",
     ]
-    skus_unicos = list(df_pallet_especifico["SKU"].unique())
+    skus_unicos = df_pallet_especifico["SKU"].unique()
     cor_map = {
         sku: paleta_cores[i % len(paleta_cores)]
         for i, sku in enumerate(skus_unicos)
     }
 
-    caixas_json = []
-    z_atual = 0.0
+    df_ordenado = df_pallet_especifico.sort_values(
+        by=["Ordem_Caixa", "SKU"], ascending=[False, True]
+    )
 
-    lista_caixas = []
+    lista_caixas_individuais = []
     for _, row in df_ordenado.iterrows():
         sku = row["SKU"]
         qtd = int(row["Qtd Caixas"])
         cor = cor_map[sku]
         cx_nome = row["Nº Caixa"]
         dims = obter_dimensoes_caixa(cx_nome)
+        ordem = row["Ordem_Caixa"]
 
         for _ in range(qtd):
-            lista_caixas.append(
-                {"sku": sku, "cor": cor, "cx_nome": cx_nome, "dims": dims}
-            )
+            lista_caixas_individuais.append({
+                "sku": sku,
+                "cor": cor,
+                "cx_nome": cx_nome,
+                "ordem": ordem,
+                "dims": dims,
+            })
 
+    if not lista_caixas_individuais:
+        return fig
+
+    x_cube = [0, 1, 1, 0, 0, 1, 1, 0]
+    y_cube = [0, 0, 1, 1, 0, 0, 1, 1]
+    z_cube = [0, 0, 0, 0, 1, 1, 1, 1]
+    i_mesh = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
+    j_mesh = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
+    k_mesh = [0, 7, 2, 3, 6, 7, 1, 1, 1, 5, 2, 7]
+
+    z_atual = 0.0
     idx = 0
-    total_caixas = len(lista_caixas)
+    total_caixas = len(lista_caixas_individuais)
 
     while idx < total_caixas:
-        cx_ref = lista_caixas[idx]
-        dims = cx_ref["dims"]
+        cx_referencia = lista_caixas_individuais[idx]
+        dims = cx_referencia["dims"]
+
         dx, dy, cols_x, cols_y = obter_melhor_orientacao(
             dims["comp"], dims["larg"], PALLET_COMP, PALLET_LARG
         )
@@ -394,178 +420,65 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico):
         qtd_camada = min(total_caixas - idx, caixas_por_camada)
 
         for i in range(qtd_camada):
-            item = lista_caixas[idx + i]
+            item = lista_caixas_individuais[idx + i]
             cx_i = i % cols_x
             cy_i = i // cols_x
 
-            x0 = offset_x + cx_i * dx + dx / 2.0
-            y0 = offset_y + cy_i * dy + dy / 2.0
-            z0 = z_atual + dz / 2.0
+            x0 = offset_x + cx_i * dx
+            y0 = offset_y + cy_i * dy
 
-            caixas_json.append(
-                {
-                    "x": round(x0, 4),
-                    "y": round(z0, 4),
-                    "z": round(y0, 4),
-                    "dx": round(dx * 0.98, 4),
-                    "dy": round(dz * 0.98, 4),
-                    "dz": round(dy * 0.98, 4),
-                    "cor": item["cor"],
-                    "sku": item["sku"],
-                    "cx_nome": item["cx_nome"],
-                }
+            x_box = [x0 + vx * (dx * 0.98) for vx in x_cube]
+            y_box = [y0 + vy * (dy * 0.98) for vy in y_cube]
+            z_box = [z_atual + vz * dz for vz in z_cube]
+
+            fig.add_trace(
+                go.Mesh3d(
+                    x=x_box,
+                    y=y_box,
+                    z=z_box,
+                    i=i_mesh,
+                    j=j_mesh,
+                    k=k_mesh,
+                    color=item["cor"],
+                    flatshading=True,
+                    lighting=dict(ambient=0.85, diffuse=0.9),
+                    hoverinfo="text",
+                    text=f"<b>SKU:</b> {item['sku']}<br><b>Tipo:</b> {item['cx_nome']}<br><b>Dimensões:</b> {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm",
+                    showscale=False,
+                )
             )
 
         idx += qtd_camada
         z_atual += dz
 
-    data_json_str = json.dumps(caixas_json)
+    # Base do Pallet de Madeira
+    fig.add_trace(
+        go.Mesh3d(
+            x=[0, PALLET_COMP, PALLET_COMP, 0, 0, PALLET_COMP, PALLET_COMP, 0],
+            y=[0, 0, PALLET_LARG, PALLET_LARG, 0, 0, PALLET_LARG, PALLET_LARG],
+            z=[-0.05, -0.05, -0.05, -0.05, 0, 0, 0, 0],
+            i=i_mesh,
+            j=j_mesh,
+            k=k_mesh,
+            color="#7C4700",
+            opacity=0.8,
+            hoverinfo="none",
+            showscale=False,
+        )
+    )
 
-    html_code = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <style>
-            body {{ margin: 0; padding: 0; overflow: hidden; background-color: #0e1117; font-family: sans-serif; }}
-            #canvas-container {{ width: 100%; height: 480px; position: relative; }}
-            #controls {{ position: absolute; top: 10px; left: 10px; z-index: 10; }}
-            button {{
-                background: #262730; color: #FAFAFA; border: 1px solid #4B4B4B;
-                padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: 600;
-                transition: all 0.2s ease; font-size: 13px;
-            }}
-            button:hover {{ background: #FF4B4B; border-color: #FF4B4B; }}
-            #info {{ position: absolute; bottom: 8px; left: 10px; color: #A0A0A0; font-size: 11px; }}
-        </style>
-        <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
-        <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    </head>
-    <body>
-        <div id="canvas-container">
-            <div id="controls">
-                <button onclick="resetarCamera()">🎥 Resetar Câmera</button>
-            </div>
-            <div id="info">💡 Arraste com o mouse para girar | Scroll para zoom</div>
-        </div>
-
-        <script>
-            let camera, scene, renderer, controls;
-            let boxMeshes = [];
-            let currentStep = 0;
-            let animando = true;
-            const caixasData = {data_json_str};
-
-            function init() {{
-                const container = document.getElementById('canvas-container');
-                scene = new THREE.Scene();
-                scene.background = new THREE.Color(0x0e1117);
-
-                camera = new THREE.PerspectiveCamera(45, container.clientWidth / 480, 0.1, 100);
-                camera.position.set(2.5, 2.0, 2.5);
-
-                renderer = new THREE.WebGLRenderer({{ antialias: true }});
-                renderer.setSize(container.clientWidth, 480);
-                renderer.setPixelRatio(window.devicePixelRatio);
-                renderer.shadowMap.enabled = true;
-                renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-                container.appendChild(renderer.domElement);
-
-                controls = new THREE.OrbitControls(camera, renderer.domElement);
-                controls.enableDamping = true;
-                controls.dampingFactor = 0.05;
-                controls.target.set(0.6, 0.4, 0.375);
-
-                const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
-                scene.add(ambientLight);
-
-                const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-                dirLight.position.set(3, 5, 2);
-                dirLight.castShadow = true;
-                scene.add(dirLight);
-
-                const gridHelper = new THREE.GridHelper(5, 20, 0x444444, 0x222222);
-                gridHelper.position.set(0.6, -0.06, 0.375);
-                scene.add(gridHelper);
-
-                // Pallet Base
-                const palletGeo = new THREE.BoxGeometry(1.20, 0.05, 0.75);
-                const palletMat = new THREE.MeshStandardMaterial({{ color: 0x8B5A2B, roughness: 0.8 }});
-                const palletMesh = new THREE.Mesh(palletGeo, palletMat);
-                palletMesh.position.set(0.6, -0.025, 0.375);
-                palletMesh.receiveShadow = true;
-                scene.add(palletMesh);
-
-                // Criar caixas
-                caixasData.forEach((item, index) => {{
-                    const geo = new THREE.BoxGeometry(item.dx, item.dy, item.dz);
-                    const mat = new THREE.MeshStandardMaterial({{
-                        color: new THREE.Color(item.cor),
-                        roughness: 0.4,
-                        metalness: 0.1
-                    }});
-                    
-                    const mesh = new THREE.Mesh(geo, mat);
-                    mesh.castShadow = true;
-                    mesh.receiveShadow = true;
-
-                    const edges = new THREE.EdgesGeometry(geo);
-                    const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({{ color: 0x000000, linewidth: 1 }}));
-                    mesh.add(line);
-
-                    mesh.userData = {{
-                        targetY: item.y,
-                        startY: item.y + 1.8,
-                        index: index
-                    }};
-
-                    mesh.position.set(item.x, mesh.userData.startY, item.z);
-                    mesh.visible = false;
-                    
-                    scene.add(mesh);
-                    boxMeshes.push(mesh);
-                }});
-
-                animate();
-            }}
-
-            function resetarCamera() {{
-                if (camera && controls) {{
-                    camera.position.set(2.5, 2.0, 2.5);
-                    controls.target.set(0.6, 0.4, 0.375);
-                }}
-            }}
-
-            function animate() {{
-                requestAnimationFrame(animate);
-                if (controls) controls.update();
-
-                if (animando && currentStep < boxMeshes.length) {{
-                    const m = boxMeshes[currentStep];
-                    m.visible = true;
-                    m.position.y -= (m.position.y - m.userData.targetY) * 0.18;
-
-                    if (Math.abs(m.position.y - m.userData.targetY) < 0.008) {{
-                        m.position.y = m.userData.targetY;
-                        currentStep++;
-                    }}
-                }}
-
-                if (renderer && scene && camera) {{
-                    renderer.render(scene, camera);
-                }}
-            }}
-
-            window.addEventListener('load', init);
-            if (document.readyState === 'complete') {{
-                init();
-            }}
-        </script>
-    </body>
-    </html>
-    """
-
-    components.html(html_code, height=500)
+    fig.update_layout(
+        title=f"{titulo} ({total_caixas} caixas)",
+        scene=dict(
+            xaxis=dict(title="Comp (1.20m)", showgrid=True),
+            yaxis=dict(title="Larg (0.75m)", showgrid=True),
+            zaxis=dict(title="Alt (m)", showgrid=True),
+            aspectmode="data",
+        ),
+        margin=dict(l=0, r=0, b=0, t=35),
+        showlegend=False,
+    )
+    return fig
 
 
 # --- 9. GERADOR DE PDF ---
@@ -573,6 +486,7 @@ def gerar_pdf(df_pallets):
     pdf = FPDF()
     pdf.add_page()
 
+    # Título
     pdf.set_font("Helvetica", "B", 16)
     pdf.cell(0, 10, "Relatorio de Paletizacao - COMEX", align="C")
     pdf.ln(8)
@@ -602,6 +516,7 @@ def gerar_pdf(df_pallets):
         )
         pdf.ln(10)
 
+        # Cabeçalho da Tabela
         pdf.set_font("Helvetica", "B", 9)
         pdf.cell(30, 6, "SKU", border=1)
         pdf.cell(100, 6, "Produto", border=1)
@@ -609,6 +524,7 @@ def gerar_pdf(df_pallets):
         pdf.cell(25, 6, "Qtd Caixas", border=1)
         pdf.ln()
 
+        # Linhas da Tabela
         pdf.set_font("Helvetica", size=9)
         for _, row in df_p.iterrows():
             prod_nome = (
@@ -627,59 +543,56 @@ def gerar_pdf(df_pallets):
     return bytes(pdf.output())
 
 
-# --- 10. EXECUÇÃO E RESULTADOS IMEDIATOS ---
-if st.button("⚙️ CALCULAR E GERAR PALLETS 3D", type="primary"):
+# --- 10. EXECUÇÃO E RESULTADOS ---
+if st.button("⚙️ CALCULAR E GERAR PALLETS 3D"):
     if not st.session_state.carrinho:
-        st.warning("Adicione pelo menos um item ao pedido antes de calcular.")
+        st.warning("Adicione itens ao pedido antes de calcular.")
     else:
-        df_pallets = processar_pallets_operador(
-            st.session_state.carrinho, df_produtos
-        )
-        pallets_unicos = df_pallets["ID"].unique()
+        st.session_state.processado = True
 
-        st.subheader("📦 Resultado da Paletização")
+if st.session_state.processado and st.session_state.carrinho:
+    df_pallets = processar_pallets_operador(
+        st.session_state.carrinho, df_produtos
+    )
 
-        col_metrica, col_pdf = st.columns([2, 1])
-        col_metrica.success(
-            f"**Total de Pallets Gerados:** {len(pallets_unicos)}"
-        )
+    st.subheader("📦 Detalhamento Individual por Pallet")
+    pallets_unicos = df_pallets["ID"].unique()
+    st.success(f"**Total de Pallets Gerados:** {len(pallets_unicos)}")
 
-        if FPDF_DISPONIVEL:
-            try:
-                pdf_bytes = gerar_pdf(df_pallets)
-                col_pdf.download_button(
-                    label="📄 Baixar Relatório (PDF)",
-                    data=pdf_bytes,
-                    file_name="plano_de_paletizacao.pdf",
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
-            except Exception as err:
-                st.error(f"Erro ao gerar PDF: {err}")
-
-        st.markdown("---")
-
-        for p_id in pallets_unicos:
-            df_p = df_pallets[df_pallets["ID"] == p_id]
-            tipo_pallet = df_p["Tipo"].iloc[0]
-            total_cx = int(df_p["Qtd Caixas"].sum())
-
-            st.markdown(
-                f"### 📌 {p_id} — Total: {total_cx} caixas ({tipo_pallet})"
+    if FPDF_DISPONIVEL:
+        try:
+            pdf_bytes = gerar_pdf(df_pallets)
+            st.download_button(
+                label="📄 Baixar Relatório em PDF",
+                data=pdf_bytes,
+                file_name="plano_de_paletizacao.pdf",
+                mime="application/pdf",
             )
+        except Exception as err:
+            st.error(f"Erro ao gerar PDF: {err}")
 
-            col_tabela, col_3d = st.columns([1, 1.2])
+    st.markdown("---")
+
+    for p_id in pallets_unicos:
+        df_p = df_pallets[df_pallets["ID"] == p_id]
+        tipo_pallet = df_p["Tipo"].iloc[0]
+        total_cx = int(df_p["Qtd Caixas"].sum())
+
+        with st.expander(
+            f"📌 {p_id} - Total: {total_cx} caixas ({tipo_pallet})",
+            expanded=True,
+        ):
+            col_tabela, col_3d = st.columns([1, 1])
 
             with col_tabela:
-                st.markdown("**Composição do Pallet:**")
+                st.markdown("**Composição das Caixas:**")
                 st.dataframe(
                     df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas"]],
                     use_container_width=True,
-                    hide_index=True,
                 )
 
             with col_3d:
-                st.markdown("**Modelo 3D Interativo:**")
-                gerar_visualizacao_3d_threejs(df_p)
-
-            st.markdown("---")
+                fig_3d = gerar_grafico_3d_otimizado(
+                    df_p, f"Estrutura 3D - {p_id}"
+                )
+                st.plotly_chart(fig_3d, use_container_width=True)
