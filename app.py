@@ -147,7 +147,6 @@ st.sidebar.info(f"""
 • **Caixa Tipo:** {prod_info['NUMERO DA CAIXA']}  
 • **Peças/Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
 • **Capacidade Pallet Fechado:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx  
-• **Dimensão Pallet:** 0,75m x 1,20m
 """)
 
 qtd_solicitada = st.sidebar.number_input(
