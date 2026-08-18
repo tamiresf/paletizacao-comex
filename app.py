@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-# Importação condicional do FPDF
+# Importação do FPDF para geração de PDF
 try:
     from fpdf import FPDF
 
@@ -14,12 +14,14 @@ except ImportError:
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
-    page_title="Sistema de Paletização 3D - COMEX", page_icon="📦", layout="wide"
+    page_title="Sistema de Paletização 3D Real - COMEX",
+    page_icon="📦",
+    layout="wide",
 )
 
-st.title("📦 Sistema de Paletização e Visualização 3D")
+st.title("📦 Sistema de Paletização 3D - Montagem Operacional Real")
 st.caption(
-    "Pallet Fumigado (0,75m x 1,20m) — Regra de Separação Estreita de Tipos de Caixas"
+    "Pallet Fumigado (0,75m x 1,20m) | Arranjo Físico por Camadas, Amarração e Estabilidade"
 )
 
 # --- 2. CONSTANTES E DIMENSÕES DAS CAIXAS (em metros) ---
@@ -40,19 +42,24 @@ def obter_dimensoes_caixa(num_caixa):
     return DIMENSOES_CAIXAS.get(key, {"comp": 0.300, "larg": 0.200, "alt": 0.150})
 
 
-def obter_melhor_orientacao(comp, larg, p_comp, p_larg):
-    nx1 = max(1, int(np.floor(p_comp / comp)))
-    ny1 = max(1, int(np.floor(p_larg / larg)))
+def calcular_arranjo_camada(comp_cx, larg_cx, pallet_comp, pallet_larg):
+    """Calcula o melhor padrão de encaixe por camada aproveitando a área do pallet."""
+    # Opção A: Caixas alinhadas na orientação normal
+    nx_a = max(1, int(np.floor(pallet_comp / comp_cx)))
+    ny_a = max(1, int(np.floor(pallet_larg / larg_cx)))
+    total_a = nx_a * ny_a
 
-    nx2 = max(1, int(np.floor(p_comp / larg)))
-    ny2 = max(1, int(np.floor(p_larg / comp)))
+    # Opção B: Caixas alinhadas rotacionadas 90°
+    nx_b = max(1, int(np.floor(pallet_comp / larg_cx)))
+    ny_b = max(1, int(np.floor(pallet_larg / comp_cx)))
+    total_b = nx_b * ny_b
 
-    if (nx2 * ny2) > (nx1 * ny1):
-        return larg, comp, nx2, ny2
-    return comp, larg, nx1, ny1
+    if total_b > total_a:
+        return larg_cx, comp_cx, nx_b, ny_b
+    return comp_cx, larg_cx, nx_a, ny_a
 
 
-# --- 3. CARREGAMENTO DE DADOS ---
+# --- 3. CARREGAMENTO DA BASE DE DADOS ---
 @st.cache_data
 def carregar_base(caminho_excel):
     df = pd.read_excel(caminho_excel)
@@ -69,7 +76,6 @@ def carregar_base(caminho_excel):
     return df
 
 
-# Localização do arquivo Excel
 caminhos_possiveis = ["COMEX.xlsx", "data/COMEX.xlsx"]
 CAMINHO_EXCEL = None
 
@@ -82,15 +88,12 @@ if not CAMINHO_EXCEL:
     st.error(
         "⚠️ O arquivo 'COMEX.xlsx' não foi encontrado no diretório do projeto."
     )
-    st.info(
-        "Certifique-se de que o arquivo 'COMEX.xlsx' está salvo na raiz do projeto ou na pasta 'data/'."
-    )
     st.stop()
 
 try:
     df_produtos = carregar_base(CAMINHO_EXCEL)
 except Exception as e:
-    st.error(f"Erro ao carregar a base de dados ({CAMINHO_EXCEL}): {e}")
+    st.error(f"Erro ao carregar a base de dados: {e}")
     st.stop()
 
 # --- 4. ESTADO DA SESSÃO ---
@@ -100,7 +103,7 @@ if "carrinho" not in st.session_state:
 if "processado" not in st.session_state:
     st.session_state.processado = False
 
-# --- 5. PAINEL LATERAL (INSERÇÃO DO PEDIDO) ---
+# --- 5. INTERFACE LATERAL ---
 st.sidebar.header("📋 Inserir Pedido")
 opcoes_produtos = df_produtos["SKU"] + " - " + df_produtos["NOME DO PRODUTO"]
 produto_selecionado = st.sidebar.selectbox(
@@ -143,7 +146,7 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
     st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
 
-# --- 6. EXIBIÇÃO DO CARRINHO DE COMPRAS ---
+# --- 6. EXIBIÇÃO DO CARRINHO ---
 st.subheader("🛒 Itens do Pedido Atual")
 
 if st.session_state.carrinho:
@@ -195,13 +198,12 @@ else:
 st.markdown("---")
 
 
-# --- 7. ALGORITMO DE PALETIZAÇÃO ---
+# --- 7. ALGORITMO DE PALETIZAÇÃO E SEPARAÇÃO ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_lista = []
     pallet_id = 1
     sobras_por_sku = []
 
-    # 1. Pallets Fechados e Separação das Sobras
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd = int(item["Qtd_Caixas"])
@@ -214,7 +216,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd_pallets_fechados = qtd // cap_pallet
         resto = qtd % cap_pallet
 
-        # Pallets Monoproduto Fechados
         for _ in range(qtd_pallets_fechados):
             pallets_lista.append({
                 "ID": f"Pallet {pallet_id}",
@@ -238,12 +239,11 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Capacidade_Max": cap_pallet,
             })
 
-    # 2. Consolidação Exclusiva por Tipo de Caixa
     if sobras_por_sku:
         df_sobras = pd.DataFrame(sobras_por_sku)
         sobras_finais_para_misturar = []
 
-        # Agrupa por tipo de caixa (Ordem_Caixa)
+        # Agrupa por tipo de caixa
         for ordem_cx, df_grupo in df_sobras.groupby("Ordem_Caixa"):
             num_caixa_tipo = df_grupo["Nº Caixa"].iloc[0]
             cap_max_tipo = df_grupo["Capacidade_Max"].iloc[0]
@@ -265,7 +265,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                     )
 
                     if caixas_que_cabem == 0:
-                        # Pallet cheio do mesmo tipo
                         for it in itens_no_pallet_atual:
                             pallets_lista.append(it)
                         pallet_id += 1
@@ -291,21 +290,19 @@ def processar_pallets_operador(carrinho, df_produtos):
                     capacidade_usada += fracao_alocada
                     qtd_restante -= qtd_alocar
 
-            # Se o pallet do mesmo tipo encheu 100%, consolida.
             if abs(capacidade_usada - 1.0) < 1e-6:
                 for it in itens_no_pallet_atual:
                     pallets_lista.append(it)
                 pallet_id += 1
             else:
-                # Armazena as sobras remanescentes deste tipo de caixa
                 for it in itens_no_pallet_atual:
                     sobras_finais_para_misturar.append(it)
 
-        # 3. ÚLTIMO PALLET MISTO (Sobras incompletas de tipos diferentes)
+        # Último Pallet Misto
         if sobras_finais_para_misturar:
             df_ultimas_sobras = pd.DataFrame(sobras_finais_para_misturar)
             df_ultimas_sobras = df_ultimas_sobras.sort_values(
-                by=["Ordem_Caixa", "SKU"]
+                by=["Ordem_Caixa", "SKU"], ascending=[False, True]
             )
 
             ultimo_pallet_id = f"Pallet {pallet_id} (Misto Final)"
@@ -350,17 +347,17 @@ def processar_pallets_operador(carrinho, df_produtos):
     return pd.DataFrame(pallets_lista)
 
 
-# --- 8. GERADOR DE MODELO 3D ---
-def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
+# --- 8. SIMULAÇÃO 3D FIDEDIGNA À REALIDADE ---
+def gerar_grafico_3d_realista(df_pallet_especifico, titulo):
     fig = go.Figure()
 
     paleta_cores = [
-        "#3B82F6",
-        "#10B981",
-        "#EF4444",
-        "#8B5CF6",
-        "#F59E0B",
-        "#D9A036",
+        "#2563EB",
+        "#059669",
+        "#DC2626",
+        "#7C3AED",
+        "#D97706",
+        "#0891B2",
     ]
     skus_unicos = df_pallet_especifico["SKU"].unique()
     cor_map = {
@@ -368,111 +365,153 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
         for i, sku in enumerate(skus_unicos)
     }
 
+    # Ordenação Física Real: Caixas maiores/pesadas em baixo, menores no topo
     df_ordenado = df_pallet_especifico.sort_values(
         by=["Ordem_Caixa", "SKU"], ascending=[False, True]
     )
 
-    lista_caixas_individuais = []
-    for _, row in df_ordenado.iterrows():
-        sku = row["SKU"]
-        qtd = int(row["Qtd Caixas"])
-        cor = cor_map[sku]
-        cx_nome = row["Nº Caixa"]
-        dims = obter_dimensoes_caixa(cx_nome)
-        ordem = row["Ordem_Caixa"]
-
-        for _ in range(qtd):
-            lista_caixas_individuais.append({
-                "sku": sku,
-                "cor": cor,
-                "cx_nome": cx_nome,
-                "ordem": ordem,
-                "dims": dims,
-            })
-
-    if not lista_caixas_individuais:
-        return fig
-
-    x_cube = [0, 1, 1, 0, 0, 1, 1, 0]
-    y_cube = [0, 0, 1, 1, 0, 0, 1, 1]
-    z_cube = [0, 0, 0, 0, 1, 1, 1, 1]
     i_mesh = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
     j_mesh = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
     k_mesh = [0, 7, 2, 3, 6, 7, 1, 1, 1, 5, 2, 7]
 
-    z_atual = 0.0
-    idx = 0
-    total_caixas = len(lista_caixas_individuais)
+    z_base_camada = 0.0
+    camada_num = 0
 
-    while idx < total_caixas:
-        cx_referencia = lista_caixas_individuais[idx]
-        dims = cx_referencia["dims"]
+    # Agrupa por tipo de caixa para garantir fiadas uniformes e planas
+    for ordem_cx, grupo_tipo in df_ordenado.groupby(
+        "Ordem_Caixa", sort=False
+    ):
+        num_caixa = grupo_tipo["Nº Caixa"].iloc[0]
+        dims = obter_dimensoes_caixa(num_caixa)
 
-        dx, dy, cols_x, cols_y = obter_melhor_orientacao(
+        dx, dy, cols_x, cols_y = calcular_arranjo_camada(
             dims["comp"], dims["larg"], PALLET_COMP, PALLET_LARG
         )
         dz = dims["alt"]
-        caixas_por_camada = max(1, cols_x * cols_y)
+        cap_por_camada = cols_x * cols_y
 
         offset_x = (PALLET_COMP - (cols_x * dx)) / 2.0
         offset_y = (PALLET_LARG - (cols_y * dy)) / 2.0
 
-        qtd_camada = min(total_caixas - idx, caixas_por_camada)
+        # Monta a fila de caixas deste tipo
+        fila_caixas = []
+        for _, row in grupo_tipo.iterrows():
+            for _ in range(int(row["Qtd Caixas"])):
+                fila_caixas.append({"sku": row["SKU"], "cor": cor_map[row["SKU"]]})
 
-        for i in range(qtd_camada):
-            item = lista_caixas_individuais[idx + i]
-            cx_i = i % cols_x
-            cy_i = i // cols_x
+        idx_cx = 0
+        total_cx_tipo = len(fila_caixas)
 
-            x0 = offset_x + cx_i * dx
-            y0 = offset_y + cy_i * dy
+        while idx_cx < total_cx_tipo:
+            camada_num += 1
+            # Amarração real: Alterna x e y em camadas pares do mesmo tipo de caixa
+            inverter = camada_num % 2 == 0 and cols_x != cols_y
 
-            x_box = [x0 + vx * (dx * 0.98) for vx in x_cube]
-            y_box = [y0 + vy * (dy * 0.98) for vy in y_cube]
-            z_box = [z_atual + vz * dz for vz in z_cube]
+            for pos in range(cap_por_camada):
+                if idx_cx >= total_cx_tipo:
+                    break
 
-            fig.add_trace(
-                go.Mesh3d(
-                    x=x_box,
-                    y=y_box,
-                    z=z_box,
-                    i=i_mesh,
-                    j=j_mesh,
-                    k=k_mesh,
-                    color=item["cor"],
-                    flatshading=True,
-                    lighting=dict(ambient=0.85, diffuse=0.9),
-                    hoverinfo="text",
-                    text=f"<b>SKU:</b> {item['sku']}<br><b>Tipo:</b> {item['cx_nome']}<br><b>Dimensões:</b> {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm",
-                    showscale=False,
+                item = fila_caixas[idx_cx]
+
+                if not inverter:
+                    cx_i = pos % cols_x
+                    cy_i = pos // cols_x
+                    x_pos = offset_x + cx_i * dx
+                    y_pos = offset_y + cy_i * dy
+                    dim_x_box = dx
+                    dim_y_box = dy
+                else:
+                    # Inversão para amarração de carga
+                    cx_i = pos % cols_y
+                    cy_i = pos // cols_y
+                    x_pos = offset_y + cx_i * dy
+                    y_pos = offset_x + cy_i * dx
+                    dim_x_box = dy
+                    dim_y_box = dx
+
+                # Vértices do cubo 3D da caixa
+                x_cube = [
+                    x_pos,
+                    x_pos + dim_x_box * 0.97,
+                    x_pos + dim_x_box * 0.97,
+                    x_pos,
+                    x_pos,
+                    x_pos + dim_x_box * 0.97,
+                    x_pos + dim_x_box * 0.97,
+                    x_pos,
+                ]
+                y_cube = [
+                    y_pos,
+                    y_pos,
+                    y_pos + dim_y_box * 0.97,
+                    y_pos + dim_y_box * 0.97,
+                    y_pos,
+                    y_pos,
+                    y_pos + dim_y_box * 0.97,
+                    y_pos + dim_y_box * 0.97,
+                ]
+                z_cube = [
+                    z_base_camada,
+                    z_base_camada,
+                    z_base_camada,
+                    z_base_camada,
+                    z_base_camada + dz * 0.97,
+                    z_base_camada + dz * 0.97,
+                    z_base_camada + dz * 0.97,
+                    z_base_camada + dz * 0.97,
+                ]
+
+                fig.add_trace(
+                    go.Mesh3d(
+                        x=x_cube,
+                        y=y_cube,
+                        z=z_cube,
+                        i=i_mesh,
+                        j=j_mesh,
+                        k=k_mesh,
+                        color=item["cor"],
+                        flatshading=True,
+                        lighting=dict(
+                            ambient=0.8, diffuse=0.9, roughness=0.1
+                        ),
+                        hoverinfo="text",
+                        text=f"<b>SKU:</b> {item['sku']}<br><b>Caixa:</b> {num_caixa}<br><b>Camada:</b> {camada_num}",
+                        showscale=False,
+                    )
                 )
-            )
 
-        idx += qtd_camada
-        z_atual += dz
+                idx_cx += 1
 
-    # Base do Pallet de Madeira
+            z_base_camada += dz  # Sobe o nível para a próxima camada física
+
+    # Desenho do Pallet de Madeira Fumigado
     fig.add_trace(
         go.Mesh3d(
             x=[0, PALLET_COMP, PALLET_COMP, 0, 0, PALLET_COMP, PALLET_COMP, 0],
             y=[0, 0, PALLET_LARG, PALLET_LARG, 0, 0, PALLET_LARG, PALLET_LARG],
-            z=[-0.05, -0.05, -0.05, -0.05, 0, 0, 0, 0],
+            z=[-0.12, -0.12, -0.12, -0.12, 0, 0, 0, 0],
             i=i_mesh,
             j=j_mesh,
             k=k_mesh,
-            color="#7C4700",
-            opacity=0.8,
-            hoverinfo="none",
+            color="#8B5A2B",
+            opacity=0.9,
+            hoverinfo="text",
+            text="Pallet Fumigado (1.20m x 0.75m)",
             showscale=False,
         )
     )
 
+    total_cx_pallet = int(df_pallet_especifico["Qtd Caixas"].sum())
     fig.update_layout(
-        title=f"{titulo} ({total_caixas} caixas)",
+        title=f"{titulo} ({total_cx_pallet} caixas)",
         scene=dict(
-            xaxis=dict(title="Comp (1.20m)", showgrid=True),
-            yaxis=dict(title="Larg (0.75m)", showgrid=True),
-            zaxis=dict(title="Alt (m)", showgrid=True),
+            xaxis=dict(
+                title="Comprimento (1.20m)", range=[-0.05, 1.25], showgrid=True
+            ),
+            yaxis=dict(
+                title="Largura (0.75m)", range=[-0.05, 0.80], showgrid=True
+            ),
+            zaxis=dict(title="Altura Carga (m)", showgrid=True),
             aspectmode="data",
         ),
         margin=dict(l=0, r=0, b=0, t=35),
@@ -486,7 +525,6 @@ def gerar_pdf(df_pallets):
     pdf = FPDF()
     pdf.add_page()
 
-    # Título
     pdf.set_font("Helvetica", "B", 16)
     pdf.cell(0, 10, "Relatorio de Paletizacao - COMEX", align="C")
     pdf.ln(8)
@@ -494,9 +532,7 @@ def gerar_pdf(df_pallets):
     pdf.cell(0, 5, "Pallet Fumigado 0,75m x 1,20m", align="C")
     pdf.ln(12)
 
-    pallets_unicos = df_pallets["ID"].unique()
-
-    for p_id in pallets_unicos:
+    for p_id in df_pallets["ID"].unique():
         df_p = df_pallets[df_pallets["ID"] == p_id]
         tipo_raw = str(df_p["Tipo"].iloc[0])
         tipo_limpo = (
@@ -516,7 +552,6 @@ def gerar_pdf(df_pallets):
         )
         pdf.ln(10)
 
-        # Cabeçalho da Tabela
         pdf.set_font("Helvetica", "B", 9)
         pdf.cell(30, 6, "SKU", border=1)
         pdf.cell(100, 6, "Produto", border=1)
@@ -524,7 +559,6 @@ def gerar_pdf(df_pallets):
         pdf.cell(25, 6, "Qtd Caixas", border=1)
         pdf.ln()
 
-        # Linhas da Tabela
         pdf.set_font("Helvetica", size=9)
         for _, row in df_p.iterrows():
             prod_nome = (
@@ -543,7 +577,7 @@ def gerar_pdf(df_pallets):
     return bytes(pdf.output())
 
 
-# --- 10. EXECUÇÃO E RESULTADOS ---
+# --- 10. EXECUÇÃO ---
 if st.button("⚙️ CALCULAR E GERAR PALLETS 3D"):
     if not st.session_state.carrinho:
         st.warning("Adicione itens ao pedido antes de calcular.")
@@ -555,7 +589,7 @@ if st.session_state.processado and st.session_state.carrinho:
         st.session_state.carrinho, df_produtos
     )
 
-    st.subheader("📦 Detalhamento Individual por Pallet")
+    st.subheader("📦 Detalhamento e Arranjo 3D Realista")
     pallets_unicos = df_pallets["ID"].unique()
     st.success(f"**Total de Pallets Gerados:** {len(pallets_unicos)}")
 
@@ -585,14 +619,14 @@ if st.session_state.processado and st.session_state.carrinho:
             col_tabela, col_3d = st.columns([1, 1])
 
             with col_tabela:
-                st.markdown("**Composição das Caixas:**")
+                st.markdown("**Composição da Carga:**")
                 st.dataframe(
                     df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas"]],
                     use_container_width=True,
                 )
 
             with col_3d:
-                fig_3d = gerar_grafico_3d_otimizado(
-                    df_p, f"Estrutura 3D - {p_id}"
+                fig_3d = gerar_grafico_3d_realista(
+                    df_p, f"Montagem Realista - {p_id}"
                 )
                 st.plotly_chart(fig_3d, use_container_width=True)
