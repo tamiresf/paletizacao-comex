@@ -70,7 +70,6 @@ def carregar_base(caminho_excel):
     return df
 
 
-# Localização do arquivo Excel
 caminhos_possiveis = ["COMEX.xlsx", "data/COMEX.xlsx"]
 CAMINHO_EXCEL = None
 
@@ -97,9 +96,6 @@ except Exception as e:
 # --- 4. ESTADO DA SESSÃO ---
 if "carrinho" not in st.session_state:
     st.session_state.carrinho = []
-
-if "processado" not in st.session_state:
-    st.session_state.processado = False
 
 # --- 5. PAINEL LATERAL (INSERÇÃO DO PEDIDO) ---
 st.sidebar.header("📋 Inserir Pedido")
@@ -141,7 +137,6 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
             "Qtd_Caixas": qtd_solicitada,
             "Pecas_Por_Caixa": int(prod_info["QUANTIDADE DE PEÇAS"]),
         })
-    st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
 
 # --- 6. EXIBIÇÃO DO CARRINHO DE COMPRAS ---
@@ -170,7 +165,6 @@ if st.session_state.carrinho:
             "🗑️", key=f"remover_{index}_{item['SKU']}", help="Remover item"
         ):
             st.session_state.carrinho.pop(index)
-            st.session_state.processado = False
             st.rerun()
 
     st.markdown("---")
@@ -188,7 +182,6 @@ if st.session_state.carrinho:
         st.write("")
         if st.button("🔴 Limpar Pedido", use_container_width=True):
             st.session_state.carrinho = []
-            st.session_state.processado = False
             st.rerun()
 else:
     st.info("Nenhum item inserido no pedido até o momento.")
@@ -244,7 +237,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         df_sobras = pd.DataFrame(sobras_por_sku)
         sobras_finais_para_misturar = []
 
-        # Agrupa por tipo de caixa (Ordem_Caixa)
         for ordem_cx, df_grupo in df_sobras.groupby("Ordem_Caixa"):
             num_caixa_tipo = df_grupo["Nº Caixa"].iloc[0]
             cap_max_tipo = df_grupo["Capacidade_Max"].iloc[0]
@@ -266,7 +258,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                     )
 
                     if caixas_que_cabem == 0:
-                        # Pallet cheio do mesmo tipo
                         for it in itens_no_pallet_atual:
                             pallets_lista.append(it)
                         pallet_id += 1
@@ -292,13 +283,11 @@ def processar_pallets_operador(carrinho, df_produtos):
                     capacidade_usada += fracao_alocada
                     qtd_restante -= qtd_alocar
 
-            # Se o pallet do mesmo tipo encheu 100%, consolida.
             if abs(capacidade_usada - 1.0) < 1e-6:
                 for it in itens_no_pallet_atual:
                     pallets_lista.append(it)
                 pallet_id += 1
             else:
-                # Armazena as sobras remanescentes deste tipo de caixa
                 for it in itens_no_pallet_atual:
                     sobras_finais_para_misturar.append(it)
 
@@ -352,8 +341,7 @@ def processar_pallets_operador(carrinho, df_produtos):
 
 
 # --- 8. GERADOR DE MODELO 3D (THREE.JS / WEBGL) ---
-def gerar_visualizacao_3d_threejs(df_pallet_especifico, titulo):
-    # 1. Preparar lista de caixas calculadas
+def gerar_visualizacao_3d_threejs(df_pallet_especifico):
     df_ordenado = df_pallet_especifico.sort_values(
         by=["Ordem_Caixa", "SKU"], ascending=[False, True]
     )
@@ -417,7 +405,7 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico, titulo):
             caixas_json.append(
                 {
                     "x": round(x0, 4),
-                    "y": round(z0, 4),  # Em Three.js Y é a altura
+                    "y": round(z0, 4),  # Y é a altura no Three.js
                     "z": round(y0, 4),
                     "dx": round(dx * 0.98, 4),
                     "dy": round(dz * 0.98, 4),
@@ -433,22 +421,21 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico, titulo):
 
     data_json_str = json.dumps(caixas_json)
 
-    # 2. HTML/JS com Three.js, OrbitControls, Sombras e Outlines
     html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <style>
             body {{ margin: 0; overflow: hidden; background-color: #0e1117; font-family: sans-serif; }}
-            #canvas-container {{ width: 100vw; height: 500px; position: relative; }}
+            #canvas-container {{ width: 100vw; height: 480px; position: relative; }}
             #controls {{ position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 8px; }}
             button {{
                 background: #262730; color: #FAFAFA; border: 1px solid #4B4B4B;
-                padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600;
-                transition: all 0.2s ease;
+                padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: 600;
+                transition: all 0.2s ease; font-size: 13px;
             }}
             button:hover {{ background: #FF4B4B; border-color: #FF4B4B; }}
-            #info {{ position: absolute; bottom: 10px; left: 10px; color: #A0A0A0; font-size: 12px; }}
+            #info {{ position: absolute; bottom: 8px; left: 10px; color: #A0A0A0; font-size: 11px; }}
         </style>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -469,11 +456,11 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico, titulo):
             const scene = new THREE.Scene();
             scene.background = new THREE.Color(0x0e1117);
 
-            const camera = new THREE.PerspectiveCamera(45, container.clientWidth / 500, 0.1, 100);
+            const camera = new THREE.PerspectiveCamera(45, container.clientWidth / 480, 0.1, 100);
             camera.position.set(2.5, 2.0, 2.5);
 
             const renderer = new THREE.WebGLRenderer({{ antialias: true, alpha: true }});
-            renderer.setSize(container.clientWidth, 500);
+            renderer.setSize(container.clientWidth, 480);
             renderer.setPixelRatio(window.devicePixelRatio);
             renderer.shadowMap.enabled = true;
             renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -484,7 +471,6 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico, titulo):
             controls.dampingFactor = 0.05;
             controls.target.set(0.6, 0.4, 0.375);
 
-            // Luzes
             const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
             scene.add(ambientLight);
 
@@ -495,12 +481,10 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico, titulo):
             dirLight.shadow.mapSize.height = 1024;
             scene.add(dirLight);
 
-            // Piso Grid Técnico
             const gridHelper = new THREE.GridHelper(5, 20, 0x444444, 0x222222);
             gridHelper.position.set(0.6, -0.06, 0.375);
             scene.add(gridHelper);
 
-            // Base do Pallet de Madeira
             const palletGeo = new THREE.BoxGeometry(1.20, 0.05, 0.75);
             const palletMat = new THREE.MeshStandardMaterial({{ color: 0x8B5A2B, roughness: 0.8 }});
             const palletMesh = new THREE.Mesh(palletGeo, palletMat);
@@ -509,12 +493,10 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico, titulo):
             palletMesh.castShadow = true;
             scene.add(palletMesh);
 
-            // Grupo de Caixas
             const boxMeshes = [];
             caixasData.forEach((item, index) => {{
                 const geo = new THREE.BoxGeometry(item.dx, item.dy, item.dz);
                 
-                // Material da Caixa
                 const mat = new THREE.MeshStandardMaterial({{
                     color: new THREE.Color(item.cor),
                     roughness: 0.4,
@@ -525,7 +507,6 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico, titulo):
                 mesh.castShadow = true;
                 mesh.receiveShadow = true;
 
-                // Linhas de Contorno (Edges) para estilo CAD
                 const edges = new THREE.EdgesGeometry(geo);
                 const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({{ color: 0x000000, linewidth: 1 }}));
                 mesh.add(line);
@@ -543,10 +524,8 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico, titulo):
                 boxMeshes.push(mesh);
             }});
 
-            // Mostrar estado final por padrão
             boxMeshes.forEach(m => m.position.y = m.userData.targetY);
 
-            // Animação de Empilhamento
             let animando = false;
             let currentStep = 0;
 
@@ -588,7 +567,7 @@ def gerar_visualizacao_3d_threejs(df_pallet_especifico, titulo):
     </html>
     """
 
-    components.html(html_code, height=520)
+    components.html(html_code, height=500)
 
 
 # --- 9. GERADOR DE PDF ---
@@ -596,7 +575,6 @@ def gerar_pdf(df_pallets):
     pdf = FPDF()
     pdf.add_page()
 
-    # Título
     pdf.set_font("Helvetica", "B", 16)
     pdf.cell(0, 10, "Relatorio de Paletizacao - COMEX", align="C")
     pdf.ln(8)
@@ -626,7 +604,6 @@ def gerar_pdf(df_pallets):
         )
         pdf.ln(10)
 
-        # Cabeçalho da Tabela
         pdf.set_font("Helvetica", "B", 9)
         pdf.cell(30, 6, "SKU", border=1)
         pdf.cell(100, 6, "Produto", border=1)
@@ -634,7 +611,6 @@ def gerar_pdf(df_pallets):
         pdf.cell(25, 6, "Qtd Caixas", border=1)
         pdf.ln()
 
-        # Linhas da Tabela
         pdf.set_font("Helvetica", size=9)
         for _, row in df_p.iterrows():
             prod_nome = (
@@ -653,54 +629,60 @@ def gerar_pdf(df_pallets):
     return bytes(pdf.output())
 
 
-# --- 10. EXECUÇÃO E RESULTADOS ---
-if st.button("⚙️ CALCULAR E GERAR PALLETS 3D"):
+# --- 10. EXECUÇÃO E RESULTADOS IMEDIATOS ---
+if st.button("⚙️ CALCULAR E GERAR PALLETS 3D", type="primary"):
     if not st.session_state.carrinho:
-        st.warning("Adicione itens ao pedido antes de calcular.")
+        st.warning("Adicione pelo menos um item ao pedido antes de calcular.")
     else:
-        st.session_state.processado = True
+        df_pallets = processar_pallets_operador(
+            st.session_state.carrinho, df_produtos
+        )
+        pallets_unicos = df_pallets["ID"].unique()
 
-if st.session_state.processado and st.session_state.carrinho:
-    df_pallets = processar_pallets_operador(
-        st.session_state.carrinho, df_produtos
-    )
+        st.subheader("📦 Resultado da Paletização")
 
-    st.subheader("📦 Detalhamento Individual por Pallet")
-    pallets_unicos = df_pallets["ID"].unique()
-    st.success(f"**Total de Pallets Gerados:** {len(pallets_unicos)}")
+        col_metrica, col_pdf = st.columns([2, 1])
+        col_metrica.success(
+            f"**Total de Pallets Gerados:** {len(pallets_unicos)}"
+        )
 
-    if FPDF_DISPONIVEL:
-        try:
-            pdf_bytes = gerar_pdf(df_pallets)
-            st.download_button(
-                label="📄 Baixar Relatório em PDF",
-                data=pdf_bytes,
-                file_name="plano_de_paletizacao.pdf",
-                mime="application/pdf",
+        if FPDF_DISPONIVEL:
+            try:
+                pdf_bytes = gerar_pdf(df_pallets)
+                col_pdf.download_button(
+                    label="📄 Baixar Relatório (PDF)",
+                    data=pdf_bytes,
+                    file_name="plano_de_paletizacao.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            except Exception as err:
+                st.error(f"Erro ao gerar PDF: {err}")
+
+        st.markdown("---")
+
+        # Exibição direta dos Pallets (renderização WebGL no carregamento)
+        for p_id in pallets_unicos:
+            df_p = df_pallets[df_pallets["ID"] == p_id]
+            tipo_pallet = df_p["Tipo"].iloc[0]
+            total_cx = int(df_p["Qtd Caixas"].sum())
+
+            st.markdown(
+                f"### 📌 {p_id} — Total: {total_cx} caixas ({tipo_pallet})"
             )
-        except Exception as err:
-            st.error(f"Erro ao gerar PDF: {err}")
 
-    st.markdown("---")
-
-    for p_id in pallets_unicos:
-        df_p = df_pallets[df_pallets["ID"] == p_id]
-        tipo_pallet = df_p["Tipo"].iloc[0]
-        total_cx = int(df_p["Qtd Caixas"].sum())
-
-        with st.expander(
-            f"📌 {p_id} - Total: {total_cx} caixas ({tipo_pallet})",
-            expanded=True,
-        ):
-            col_tabela, col_3d = st.columns([1, 1])
+            col_tabela, col_3d = st.columns([1, 1.2])
 
             with col_tabela:
-                st.markdown("**Composição das Caixas:**")
+                st.markdown("**Composição do Pallet:**")
                 st.dataframe(
                     df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas"]],
                     use_container_width=True,
+                    hide_index=True,
                 )
 
             with col_3d:
-                st.markdown(f"**Visualização 3D Interativa — {p_id}**")
-                gerar_visualizacao_3d_threejs(df_p, f"Estrutura 3D - {p_id}")
+                st.markdown("**Modelo 3D Interativo:**")
+                gerar_visualizacao_3d_threejs(df_p)
+
+            st.markdown("---")
