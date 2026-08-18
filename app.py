@@ -19,9 +19,6 @@ st.set_page_config(
     page_title="Sistema de Paletização - MUSTAD", page_icon="📦", layout="wide"
 )
 
-# Caminho da logo
-CAMINHO_LOGO = https://mustad365-my.sharepoint.com/my?id=%2Fpersonal%2Ftamires%5Fsantos%5Fmustad%5Fcom%2FDocuments%2FLogo%5Fmustad%2Epng&parent=%2Fpersonal%2Ftamires%5Fsantos%5Fmustad%5Fcom%2FDocuments
-
 # CSS para o campo do cliente em destaque
 st.markdown(
     """
