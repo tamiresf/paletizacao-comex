@@ -219,13 +219,13 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO SEM FRACIONADOS INTERMEDIÁRIOS ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO (GARANTE APENAS O ÚLTIMO FRACIONADO) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
     sobras_por_tipo_caixa = {}
 
-    # Passo 1: Pallets 100% Fechados do mesmo SKU
+    # Passo 1: Separar Pallets 100% Fechados por SKU
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -233,7 +233,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
 
         cap_max_caixas = int(prod["QUANTIDADE DE CAIXAS NO PALLET"])
-        cap_max_pecas = int(prod["QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET"])
         ordem_cx = int(prod.get("Ordem_Caixa", 0))
         num_caixa = str(prod["NUMERO DA CAIXA"]).strip()
         pecas_por_caixa = int(prod["QUANTIDADE DE PEÇAS"])
@@ -241,6 +240,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd_pallets_fechados = qtd_total_caixas // cap_max_caixas
         resto = qtd_total_caixas % cap_max_caixas
 
+        # Adiciona pallets completos
         for _ in range(qtd_pallets_fechados):
             pallets_bruto.append({
                 "Pallet_Num": pallet_num,
@@ -255,6 +255,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             })
             pallet_num += 1
 
+        # Acumula sobras para unificação
         if resto > 0:
             if num_caixa not in sobras_por_tipo_caixa:
                 sobras_por_tipo_caixa[num_caixa] = []
@@ -267,45 +268,42 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Nº Caixa": num_caixa,
                 "Ordem_Caixa": ordem_cx,
                 "Capacidade_Max_Caixas": cap_max_caixas,
-                "Capacidade_Max_Pecas": cap_max_pecas,
             })
 
-    # Passo 2: Agrupa TODAS as sobras do mesmo tipo de caixa e enche os pallets até o limite máximo
+    # Passo 2: Consolidação Estrita das Sobras (Apenas o ÚLTIMO pallet pode ser fracionado)
     for num_caixa, lista_sobras in sobras_por_tipo_caixa.items():
-        caixas_acumuladas_pallet = 0
-        itens_acumulados = []
-        
-        # Define o limite de referência do pallet baseado no cadastro do tipo de caixa
-        cap_alvo_caixas = lista_sobras[0]["Capacidade_Max_Caixas"]
+        caixas_no_pallet = 0
+        itens_no_pallet = []
+        cap_alvo = lista_sobras[0]["Capacidade_Max_Caixas"]
 
         for row in lista_sobras:
             qtd_restante = row["Qtd Caixas"]
             pecas_cx = row["Pecas_Por_Caixa"]
 
             while qtd_restante > 0:
-                espaco_livre = cap_alvo_caixas - caixas_acumuladas_pallet
+                espaco_livre = cap_alvo - caixas_no_pallet
 
-                # Se o pallet encheu 100%, consolida como Pallet Fechado/Misto e passa para o próximo
+                # Se encheu o pallet atual, consolida obrigatoriamente como FECHADO
                 if espaco_livre == 0:
                     pallet_label = f"Pallet {pallet_num:02d}"
-                    qtd_skus = len({it["SKU"] for it in itens_acumulados})
+                    qtd_skus = len({it["SKU"] for it in itens_no_pallet})
                     tipo_str = "Misto Fechado 🟡" if qtd_skus > 1 else "Fechado 🟢"
 
-                    for it in itens_acumulados:
+                    for it in itens_no_pallet:
                         it["Pallet_Num"] = pallet_num
                         it["ID"] = pallet_label
                         it["Tipo"] = tipo_str
                         pallets_bruto.append(it)
 
                     pallet_num += 1
-                    caixas_acumuladas_pallet = 0
-                    itens_acumulados = []
-                    cap_alvo_caixas = row["Capacidade_Max_Caixas"]
-                    espaco_livre = cap_alvo_caixas
+                    caixas_no_pallet = 0
+                    itens_no_pallet = []
+                    cap_alvo = row["Capacidade_Max_Caixas"]
+                    espaco_livre = cap_alvo
 
                 qtd_alocar = min(qtd_restante, espaco_livre)
 
-                itens_acumulados.append({
+                itens_no_pallet.append({
                     "Pallet_Num": pallet_num,
                     "ID": "",
                     "Tipo": "",
@@ -317,21 +315,21 @@ def processar_pallets_operador(carrinho, df_produtos):
                     "Ordem_Caixa": row["Ordem_Caixa"],
                 })
 
-                caixas_acumuladas_pallet += qtd_alocar
+                caixas_no_pallet += qtd_alocar
                 qtd_restante -= qtd_alocar
 
-        # Garante que APENAS o último saldo residual do lote fique como fracionado
-        if itens_acumulados:
+        # Ao terminar o loop do tipo de caixa: se sobrou algo e não preencheu 100%, ESTE É O ÚNICO FRACIONADO
+        if itens_no_pallet:
             pallet_label = f"Pallet {pallet_num:02d}"
-            qtd_skus = len({it["SKU"] for it in itens_acumulados})
-            is_full = caixas_acumuladas_pallet == cap_alvo_caixas
+            qtd_skus = len({it["SKU"] for it in itens_no_pallet})
+            is_full = caixas_no_pallet == cap_alvo
 
             if is_full:
                 tipo_str = "Misto Fechado 🟡" if qtd_skus > 1 else "Fechado 🟢"
             else:
                 tipo_str = "Pallet Final (Fracionado) 🟠"
 
-            for it in itens_acumulados:
+            for it in itens_no_pallet:
                 it["Pallet_Num"] = pallet_num
                 it["ID"] = pallet_label
                 it["Tipo"] = tipo_str
@@ -343,7 +341,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     if df_temp.empty:
         return df_temp
 
-    # Passo 3: Ordenação sequencial estrita dos Pallets
+    # Passo 3: Agrupamento final mantendo ordem numérica do pallet
     df_consolidado = (
         df_temp.groupby(
             ["Pallet_Num", "ID", "Tipo", "SKU", "Produto", "Nº Caixa"],
