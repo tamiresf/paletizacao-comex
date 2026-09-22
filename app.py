@@ -220,13 +220,13 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO (TOTALIZADO POR SKU) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO (ORDENADO CRONOLOGICAMENTE) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
-    pallet_id = 1
+    pallet_num = 1
     sobras_por_tipo_caixa = {}
 
-    # Passo 1: Separar Pallets 100% Fechados e agrupar sobras pelo tipo/número da caixa
+    # Passo 1: Separar Pallets 100% Fechados e agrupar sobras por tipo de caixa
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -240,13 +240,13 @@ def processar_pallets_operador(carrinho, df_produtos):
         num_caixa = str(prod["NUMERO DA CAIXA"]).strip()
         pecas_por_caixa = int(prod["QUANTIDADE DE PEÇAS"])
 
-        # Pallets Fechados com o mesmo SKU
         qtd_pallets_fechados = qtd_total_caixas // cap_max_pallet
         resto = qtd_total_caixas % cap_max_pallet
 
         for _ in range(qtd_pallets_fechados):
             pallets_bruto.append({
-                "ID": f"Pallet {pallet_id}",
+                "Pallet_Num": pallet_num,
+                "ID": f"Pallet {pallet_num:02d}",
                 "Tipo": "Fechado 🟢",
                 "SKU": sku,
                 "Produto": prod["NOME DO PRODUTO"],
@@ -256,9 +256,8 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Ordem_Caixa": ordem_cx,
                 "Capacidade_Max": cap_max_pallet,
             })
-            pallet_id += 1
+            pallet_num += 1
 
-        # Agrupar sobras estritamente pelo tipo de caixa
         if resto > 0:
             if num_caixa not in sobras_por_tipo_caixa:
                 sobras_por_tipo_caixa[num_caixa] = []
@@ -273,7 +272,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Capacidade_Max": cap_max_pallet,
             })
 
-    # Passo 2: Alocar sobras sem divisão de fileiras por SKU
+    # Passo 2: Alocar sobras mantendo numeração sequencial
     for num_caixa, lista_sobras in sobras_por_tipo_caixa.items():
         caixas_no_pallet_atual = 0
         itens_no_pallet = []
@@ -287,16 +286,17 @@ def processar_pallets_operador(carrinho, df_produtos):
                 espaco_disponivel = cap_alvo_pallet - caixas_no_pallet_atual
 
                 if espaco_disponivel == 0:
-                    pallet_label = f"Pallet {pallet_id}"
+                    pallet_label = f"Pallet {pallet_num:02d}"
                     qtd_skus = len({it["SKU"] for it in itens_no_pallet})
                     tipo_str = "Misto Fechado 🟡" if qtd_skus > 1 else "Fechado 🟢"
 
                     for it in itens_no_pallet:
+                        it["Pallet_Num"] = pallet_num
                         it["ID"] = pallet_label
                         it["Tipo"] = tipo_str
                         pallets_bruto.append(it)
 
-                    pallet_id += 1
+                    pallet_num += 1
                     caixas_no_pallet_atual = 0
                     itens_no_pallet = []
                     espaco_disponivel = cap_alvo_pallet
@@ -304,6 +304,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 qtd_alocar = min(qtd_restante, espaco_disponivel)
 
                 itens_no_pallet.append({
+                    "Pallet_Num": pallet_num,
                     "ID": "",
                     "Tipo": "",
                     "SKU": row["SKU"],
@@ -318,9 +319,8 @@ def processar_pallets_operador(carrinho, df_produtos):
                 caixas_no_pallet_atual += qtd_alocar
                 qtd_restante -= qtd_alocar
 
-        # Finalizar o pallet residual do tipo de caixa atual
         if itens_no_pallet:
-            pallet_label = f"Pallet {pallet_id}"
+            pallet_label = f"Pallet {pallet_num:02d}"
             qtd_skus = len({it["SKU"] for it in itens_no_pallet})
             is_full = caixas_no_pallet_atual == cap_alvo_pallet
 
@@ -330,28 +330,31 @@ def processar_pallets_operador(carrinho, df_produtos):
                 tipo_str = "Pallet Final (Fracionado) 🟠"
 
             for it in itens_no_pallet:
+                it["Pallet_Num"] = pallet_num
                 it["ID"] = pallet_label
                 it["Tipo"] = tipo_str
                 pallets_bruto.append(it)
 
-            pallet_id += 1
+            pallet_num += 1
 
-    # Passo 3: Consolidar total por SKU dentro de cada Pallet
     df_temp = pd.DataFrame(pallets_bruto)
     if df_temp.empty:
         return df_temp
 
+    # Passo 3: Consolidar total por SKU mantendo ordenação numérica do pallet
     df_consolidado = (
         df_temp.groupby(
-            ["ID", "Tipo", "SKU", "Produto", "Nº Caixa"], as_index=False
+            ["Pallet_Num", "ID", "Tipo", "SKU", "Produto", "Nº Caixa"],
+            as_index=False,
         )
         .agg({"Qtd Caixas": "sum", "Total Peças": "sum"})
+        .sort_values(by="Pallet_Num")
     )
 
     return df_consolidado
 
 
-# --- 7. GERADOR DE PDF ---
+# --- 7. GERADOR DE PDF (COM ORDENAÇÃO NUMÉRICA) ---
 def gerar_pdf(df_pallets, cliente, data_str):
     pdf = FPDF()
     pdf.add_page()
@@ -370,9 +373,10 @@ def gerar_pdf(df_pallets, cliente, data_str):
     pdf.cell(0, 5, f"Data de Emissão: {data_str}", align="C")
     pdf.ln(12)
 
-    pallets_unicos = df_pallets["ID"].unique()
+    # Ordenação estrita por Pallet_Num
+    pallets_ordenados = df_pallets.sort_values("Pallet_Num")["ID"].unique()
 
-    for p_id in pallets_unicos:
+    for p_id in pallets_ordenados:
         df_p = df_pallets[df_pallets["ID"] == p_id]
         tipo_raw = str(df_p["Tipo"].iloc[0])
         tipo_limpo = (
@@ -430,7 +434,9 @@ if st.session_state.processado and st.session_state.carrinho:
     )
 
     st.subheader("📦 Detalhamento Individual por Pallet")
-    pallets_unicos = df_pallets["ID"].unique()
+    pallets_unicos = (
+        df_pallets.sort_values("Pallet_Num")["ID"].unique()
+    )
     st.success(f"**Total de Pallets Gerados:** {len(pallets_unicos)}")
 
     if FPDF_DISPONIVEL:
