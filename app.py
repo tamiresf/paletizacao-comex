@@ -9,6 +9,7 @@ import streamlit as st
 # Importação condicional do FPDF
 try:
     from fpdf import FPDF
+
     FPDF_DISPONIVEL = True
 except ImportError:
     FPDF_DISPONIVEL = False
@@ -18,7 +19,7 @@ st.set_page_config(
     page_title="Sistema de Paletização - MUSTAD", page_icon="📦", layout="wide"
 )
 
-# CSS para o campo do cliente em destaque
+# CSS para estilo visual
 st.markdown(
     """
     <style>
@@ -68,29 +69,44 @@ def obter_melhor_orientacao(comp, larg, p_comp, p_larg):
     return comp, larg, nx1, ny1
 
 
-# --- 3. CARREGAMENTO DE DADOS ---
+# --- 3. CARREGAMENTO E TRATAMENTO DA BASE DE DADOS ---
 @st.cache_data
 def carregar_base(caminho_excel):
     df = pd.read_excel(caminho_excel)
     df.columns = df.columns.str.strip()
-    df["SKU"] = df["SKU"].astype(str).str.strip()
 
-    # Garantir conversão das colunas essenciais
-    df["QUANTIDADE DE CAIXAS POR FILEIRA"] = pd.to_numeric(
-        df["QUANTIDADE DE CAIXAS POR FILEIRA"], errors="coerce"
-    ).fillna(1)
-    df["ALTURA"] = pd.to_numeric(df["ALTURA"], errors="coerce").fillna(1)
-    df["QUANTIDADE DE CAIXAS NO PALLET"] = pd.to_numeric(
-        df["QUANTIDADE DE CAIXAS NO PALLET"], errors="coerce"
-    ).fillna(1)
+    # Tratamento e conversão de colunas numéricas
+    df["SKU"] = df["SKU"].astype(str).str.strip()
+    df["NOME DO PRODUTO"] = df["NOME DO PRODUTO"].astype(str).str.strip()
+    df["NUMERO DA CAIXA"] = df["NUMERO DA CAIXA"].astype(str).str.strip()
+
+    colunas_numericas = [
+        "QUANTIDADE DE PEÇAS",
+        "QUANTIDADE DE CAIXAS NO PALLET",
+        "QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET",
+        "QUANTIDADE DE CAIXAS POR FILEIRA",
+        "ALTURA",
+    ]
+
+    for col in colunas_numericas:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(1).astype(int)
+        else:
+            df[col] = 1
 
     def extrair_num_caixa(val):
         try:
-            return int(str(val).upper().replace("CAIXA", "").strip())
+            return int(re.sub(r"\D", "", str(val)))
         except Exception:
             return 0
 
     df["Ordem_Caixa"] = df["NUMERO DA CAIXA"].apply(extrair_num_caixa)
+
+    # Capacidade total recalculada por fileira e altura
+    df["CAPACIDADE_CALCULADA_PALLET"] = (
+        df["QUANTIDADE DE CAIXAS POR FILEIRA"] * df["ALTURA"]
+    )
+
     return df
 
 
@@ -103,7 +119,9 @@ for c in caminhos_possiveis:
         break
 
 if not CAMINHO_EXCEL:
-    st.error("⚠️ O arquivo 'COMEX.xlsx' não foi encontrado no diretório do projeto.")
+    st.error(
+        "⚠️ O arquivo 'COMEX.xlsx' não foi encontrado no diretório do projeto."
+    )
     st.stop()
 
 try:
@@ -130,18 +148,18 @@ sku_sel = produto_selecionado.split(" - ")[0]
 prod_info = df_produtos[df_produtos["SKU"] == sku_sel].iloc[0]
 
 st.sidebar.info(f"""
-**Informações do Cadastro:**  
-• **Caixa Tipo:** {prod_info['NUMERO DA CAIXA']}  
-• **Peças/Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
-• **Caixas/Fileira:** {int(prod_info['QUANTIDADE DE CAIXAS POR FILEIRA'])}  
-• **Limite de Altura (Fileiras):** {int(prod_info['ALTURA'])}  
-• **Capacidade Pallet Fechado:** {int(prod_info['QUANTIDADE DE CAIXAS NO PALLET'])} cx
+**Informações de Cadastro do SKU:**  
+• **Tipo da Caixa:** Caixa {prod_info['NUMERO DA CAIXA']}  
+• **Peças / Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
+• **Caixas / Fileira:** {prod_info['QUANTIDADE DE CAIXAS POR FILEIRA']}  
+• **Altura Máx. (Fileiras):** {prod_info['ALTURA']}  
+• **Capacidade Pallet Fechado:** {prod_info['CAPACIDADE_CALCULADA_PALLET']} cx ({prod_info['QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET']} peças)
 """)
 
 qtd_solicitada = st.sidebar.number_input(
     "Qtd de Caixas Solicitada:",
     min_value=1,
-    value=int(prod_info["QUANTIDADE DE CAIXAS NO PALLET"]),
+    value=int(prod_info["CAPACIDADE_CALCULADA_PALLET"]),
     step=1,
 )
 
@@ -159,11 +177,14 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
             "Nº Caixa": prod_info["NUMERO DA CAIXA"],
             "Qtd_Caixas": qtd_solicitada,
             "Pecas_Por_Caixa": int(prod_info["QUANTIDADE DE PEÇAS"]),
+            "Caixas_Por_Fileira": int(prod_info["QUANTIDADE DE CAIXAS POR FILEIRA"]),
+            "Altura_Max_Fileiras": int(prod_info["ALTURA"]),
+            "Unidades_Pecas_Pallet": int(prod_info["QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET"]),
         })
     st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
 
-# --- 6. IDENTIFICAÇÃO DO CLIENTE COM DESTAQUE VISUAL ---
+# --- 6. IDENTIFICAÇÃO DO CLIENTE ---
 st.markdown(
     """
 <div class="cliente-box">
@@ -231,7 +252,7 @@ else:
 st.markdown("---")
 
 
-# --- 7. ALGORITMO DE PALETIZAÇÃO COM VALIDAÇÃO DE ALTURA (FILEIRAS MÁXIMAS) ---
+# --- 7. ALGORITMO DE PALETIZAÇÃO OTIMIZADO ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_lista = []
     pallet_id = 1
@@ -239,37 +260,34 @@ def processar_pallets_operador(carrinho, df_produtos):
 
     for item in carrinho:
         sku = str(item["SKU"]).strip()
-        qtd = int(item["Qtd_Caixas"])
+        qtd_total_caixas = int(item["Qtd_Caixas"])
 
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
 
-        # Respeita o limite de caixas por pallet vindo do cadastro e valida contra limite de altura em fileiras
-        cx_por_fileira = max(1, int(prod.get("QUANTIDADE DE CAIXAS POR FILEIRA", 1)))
-        altura_max_fileiras = max(1, int(prod.get("ALTURA", 1)))
-        cap_pallet_cadastro = int(prod["QUANTIDADE DE CAIXAS NO PALLET"])
-
-        # Capacidade máxima restrita pela altura (Fileiras * Caixas/Fileira)
-        cap_max_altura = cx_por_fileira * altura_max_fileiras
-        cap_pallet = min(cap_pallet_cadastro, cap_max_altura)
-
+        cx_fileira = int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
+        altura_max_fileiras = int(prod["ALTURA"])
+        cap_max_pallet = cx_fileira * altura_max_fileiras
         ordem_cx = int(prod.get("Ordem_Caixa", 0))
         num_caixa = str(prod["NUMERO DA CAIXA"]).strip()
+        pecas_por_caixa = int(prod["QUANTIDADE DE PEÇAS"])
 
-        qtd_pallets_fechados = qtd // cap_pallet
-        resto = qtd % cap_pallet
+        qtd_pallets_fechados = qtd_total_caixas // cap_max_pallet
+        resto = qtd_total_caixas % cap_max_pallet
 
+        # Pallets fechados do mesmo SKU
         for _ in range(qtd_pallets_fechados):
             pallets_lista.append({
                 "ID": f"Pallet {pallet_id}",
                 "Tipo": "Fechado 🟢",
                 "SKU": sku,
                 "Produto": prod["NOME DO PRODUTO"],
-                "Qtd Caixas": cap_pallet,
+                "Qtd Caixas": cap_max_pallet,
+                "Total Peças": cap_max_pallet * pecas_por_caixa,
                 "Nº Caixa": num_caixa,
                 "Ordem_Caixa": ordem_cx,
-                "Capacidade_Max": cap_pallet,
-                "Cx_Fileira": cx_por_fileira,
+                "Cx_Fileira": cx_fileira,
                 "Altura_Max": altura_max_fileiras,
+                "Capacidade_Max": cap_max_pallet,
             })
             pallet_id += 1
 
@@ -278,122 +296,71 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "SKU": sku,
                 "Produto": prod["NOME DO PRODUTO"],
                 "Qtd Caixas": resto,
+                "Total Peças": resto * pecas_por_caixa,
                 "Nº Caixa": num_caixa,
                 "Ordem_Caixa": ordem_cx,
-                "Capacidade_Max": cap_pallet,
-                "Cx_Fileira": cx_por_fileira,
+                "Cx_Fileira": cx_fileira,
                 "Altura_Max": altura_max_fileiras,
+                "Capacidade_Max": cap_max_pallet,
             })
 
+    # Tratamento de sobras (Pallets Mistos respeitando a regra de caixa/fileira/altura)
     if sobras_por_sku:
         df_sobras = pd.DataFrame(sobras_por_sku)
-        sobras_finais_para_misturar = []
 
         for ordem_cx, df_grupo in df_sobras.groupby("Ordem_Caixa"):
             num_caixa_tipo = df_grupo["Nº Caixa"].iloc[0]
-            cap_max_tipo = df_grupo["Capacidade_Max"].iloc[0]
-            fracao_unidade = 1.0 / cap_max_tipo
+            cx_fileira_tipo = df_grupo["Cx_Fileira"].iloc[0]
+            altura_max_tipo = df_grupo["Altura_Max"].iloc[0]
+            cap_max_tipo = cx_fileira_tipo * altura_max_tipo
 
-            pallet_mesmo_tipo_id = f"Pallet {pallet_id} (Sobras - Caixa {num_caixa_tipo})"
-            capacidade_usada = 0.0
-            itens_no_pallet_atual = []
+            pallet_mesmo_tipo_id = f"Pallet {pallet_id} (Misto - Caixa {num_caixa_tipo})"
+            caixas_no_pallet_atual = 0
+            itens_no_pallet = []
 
             for _, row in df_grupo.iterrows():
                 qtd_restante = row["Qtd Caixas"]
 
                 while qtd_restante > 0:
-                    espaco_disponivel = 1.0 - capacidade_usada
-                    caixas_que_cabem = int(
-                        np.floor((espaco_disponivel + 1e-9) / fracao_unidade)
-                    )
+                    espaco_disponivel = cap_max_tipo - caixas_no_pallet_atual
 
-                    if caixas_que_cabem == 0:
-                        for it in itens_no_pallet_atual:
+                    if espaco_disponivel == 0:
+                        for it in itens_no_pallet:
                             pallets_lista.append(it)
                         pallet_id += 1
-                        pallet_mesmo_tipo_id = f"Pallet {pallet_id} (Sobras - Caixa {num_caixa_tipo})"
-                        capacidade_usada = 0.0
-                        itens_no_pallet_atual = []
-                        caixas_que_cabem = cap_max_tipo
+                        pallet_mesmo_tipo_id = f"Pallet {pallet_id} (Misto - Caixa {num_caixa_tipo})"
+                        caixas_no_pallet_atual = 0
+                        itens_no_pallet = []
+                        espaco_disponivel = cap_max_tipo
 
-                    qtd_alocar = min(qtd_restante, caixas_que_cabem)
-                    fracao_alocada = qtd_alocar * fracao_unidade
+                    qtd_alocar = min(qtd_restante, espaco_disponivel)
 
-                    itens_no_pallet_atual.append({
+                    itens_no_pallet.append({
                         "ID": pallet_mesmo_tipo_id,
                         "Tipo": "Misto (Mesma Caixa) 🟡",
                         "SKU": row["SKU"],
                         "Produto": row["Produto"],
                         "Qtd Caixas": qtd_alocar,
+                        "Total Peças": qtd_alocar * (row["Total Peças"] // row["Qtd Caixas"]),
                         "Nº Caixa": row["Nº Caixa"],
                         "Ordem_Caixa": ordem_cx,
+                        "Cx_Fileira": cx_fileira_tipo,
+                        "Altura_Max": altura_max_tipo,
                         "Capacidade_Max": cap_max_tipo,
-                        "Cx_Fileira": row["Cx_Fileira"],
-                        "Altura_Max": row["Altura_Max"],
                     })
 
-                    capacidade_usada += fracao_alocada
+                    caixas_no_pallet_atual += qtd_alocar
                     qtd_restante -= qtd_alocar
 
-            if abs(capacidade_usada - 1.0) < 1e-6:
-                for it in itens_no_pallet_atual:
+            if itens_no_pallet:
+                for it in itens_no_pallet:
                     pallets_lista.append(it)
                 pallet_id += 1
-            else:
-                for it in itens_no_pallet_atual:
-                    sobras_finais_para_misturar.append(it)
-
-        if sobras_finais_para_misturar:
-            df_ultimas_sobras = pd.DataFrame(sobras_finais_para_misturar)
-            df_ultimas_sobras = df_ultimas_sobras.sort_values(
-                by=["Ordem_Caixa", "SKU"]
-            )
-
-            ultimo_pallet_id = f"Pallet {pallet_id} (Misto Final)"
-            cap_usada_ultimo = 0.0
-
-            for _, row in df_ultimas_sobras.iterrows():
-                cap_max = row["Capacidade_Max"]
-                fracao_unidade = 1.0 / cap_max
-                qtd_restante = row["Qtd Caixas"]
-
-                while qtd_restante > 0:
-                    espaco_disponivel = 1.0 - cap_usada_ultimo
-                    caixas_que_cabem = int(
-                        np.floor((espaco_disponivel + 1e-9) / fracao_unidade)
-                    )
-
-                    if caixas_que_cabem == 0:
-                        pallet_id += 1
-                        ultimo_pallet_id = f"Pallet {pallet_id} (Misto Final)"
-                        cap_usada_ultimo = 0.0
-                        caixas_que_cabem = int(
-                            np.floor((1.0 + 1e-9) / fracao_unidade)
-                        )
-
-                    qtd_alocar = min(qtd_restante, caixas_que_cabem)
-                    fracao_alocada = qtd_alocar * fracao_unidade
-
-                    pallets_lista.append({
-                        "ID": ultimo_pallet_id,
-                        "Tipo": "Misto Diversos 🟠",
-                        "SKU": row["SKU"],
-                        "Produto": row["Produto"],
-                        "Qtd Caixas": qtd_alocar,
-                        "Nº Caixa": row["Nº Caixa"],
-                        "Ordem_Caixa": row["Ordem_Caixa"],
-                        "Capacidade_Max": cap_max,
-                        "Cx_Fileira": row["Cx_Fileira"],
-                        "Altura_Max": row["Altura_Max"],
-                    })
-
-                    cap_usada_ultimo += fracao_alocada
-                    qtd_restante -= qtd_alocar
 
     return pd.DataFrame(pallets_lista)
 
 
-# --- 8. GERADOR DE MODELO 3D (ATIVO) ---
+# --- 8. GERADOR DO MODELO 3D ---
 def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     fig = go.Figure()
 
@@ -423,6 +390,7 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
         cx_nome = row["Nº Caixa"]
         dims = obter_dimensoes_caixa(cx_nome)
         ordem = row["Ordem_Caixa"]
+        cx_fileira = row["Cx_Fileira"]
 
         for _ in range(qtd):
             lista_caixas_individuais.append({
@@ -431,6 +399,7 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
                 "cx_nome": cx_nome,
                 "ordem": ordem,
                 "dims": dims,
+                "cx_fileira": cx_fileira,
             })
 
     if not lista_caixas_individuais:
@@ -448,14 +417,14 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     total_caixas = len(lista_caixas_individuais)
 
     while idx < total_caixas:
-        cx_referencia = lista_caixas_individuais[idx]
-        dims = cx_referencia["dims"]
+        cx_ref = lista_caixas_individuais[idx]
+        dims = cx_ref["dims"]
 
         dx, dy, cols_x, cols_y = obter_melhor_orientacao(
             dims["comp"], dims["larg"], PALLET_COMP, PALLET_LARG
         )
         dz = dims["alt"]
-        caixas_por_camada = max(1, cols_x * cols_y)
+        caixas_por_camada = max(1, cx_ref["cx_fileira"])
 
         offset_x = (PALLET_COMP - (cols_x * dx)) / 2.0
         offset_y = (PALLET_LARG - (cols_y * dy)) / 2.0
@@ -486,7 +455,7 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
                     flatshading=True,
                     lighting=dict(ambient=0.85, diffuse=0.9),
                     hoverinfo="text",
-                    text=f"<b>SKU:</b> {item['sku']}<br><b>Tipo:</b> {item['cx_nome']}<br><b>Dimensões:</b> {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm",
+                    text=f"<b>SKU:</b> {item['sku']}<br><b>Caixa:</b> {item['cx_nome']}<br><b>Dimensões:</b> {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm",
                     showscale=False,
                 )
             )
@@ -494,7 +463,7 @@ def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
         idx += qtd_camada
         z_atual += dz
 
-    # Base do Pallet
+    # Desenho do Pallet de Madeira
     fig.add_trace(
         go.Mesh3d(
             x=[0, PALLET_COMP, PALLET_COMP, 0, 0, PALLET_COMP, PALLET_COMP, 0],
@@ -529,18 +498,12 @@ def gerar_pdf(df_pallets, cliente, data_str):
     pdf = FPDF()
     pdf.add_page()
 
-    # Título Principal
     pdf.set_font("Helvetica", "B", 16)
     pdf.cell(0, 10, "MUSTAD - Relatório de Paletização", align="C")
     pdf.ln(7)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.ln(8)
 
-    # Nome do Cliente e Data
     nome_cliente_formatado = cliente.strip() if cliente else "Não Informado"
-    cliente_pdf = nome_cliente_formatado.encode("latin-1", "replace").decode(
-        "latin-1"
-    )
+    cliente_pdf = nome_cliente_formatado.encode("latin-1", "replace").decode("latin-1")
 
     pdf.set_font("Helvetica", "B", 11)
     pdf.cell(0, 6, f"Cliente: {cliente_pdf}", align="C")
@@ -555,42 +518,40 @@ def gerar_pdf(df_pallets, cliente, data_str):
         df_p = df_pallets[df_pallets["ID"] == p_id]
         tipo_raw = str(df_p["Tipo"].iloc[0])
         tipo_limpo = (
-            tipo_raw.replace("🟢", "")
-            .replace("🟡", "")
-            .replace("🟠", "")
-            .strip()
+            tipo_raw.replace("🟢", "").replace("🟡", "").replace("🟠", "").strip()
         )
         total_cx = int(df_p["Qtd Caixas"].sum())
+        total_pecas = int(df_p["Total Peças"].sum())
 
         pdf.set_font("Helvetica", "B", 11)
         pdf.cell(
             0,
             8,
-            f"{p_id} | Tipo: {tipo_limpo} | Total: {total_cx} caixas",
+            f"{p_id} | Tipo: {tipo_limpo} | Total: {total_cx} caixas ({total_pecas} peças)",
             border="B",
         )
         pdf.ln(10)
 
-        # Cabeçalho da Tabela
         pdf.set_font("Helvetica", "B", 9)
         pdf.cell(30, 6, "SKU", border=1)
-        pdf.cell(100, 6, "Produto", border=1)
-        pdf.cell(25, 6, "N. Caixa", border=1)
+        pdf.cell(85, 6, "Produto", border=1)
+        pdf.cell(20, 6, "N. Caixa", border=1)
         pdf.cell(25, 6, "Qtd Caixas", border=1)
+        pdf.cell(25, 6, "Qtd Peças", border=1)
         pdf.ln()
 
-        # Linhas da Tabela
         pdf.set_font("Helvetica", size=9)
         for _, row in df_p.iterrows():
             prod_nome = (
                 str(row["Produto"])
                 .encode("latin-1", "replace")
-                .decode("latin-1")[:45]
+                .decode("latin-1")[:38]
             )
             pdf.cell(30, 6, str(row["SKU"]), border=1)
-            pdf.cell(100, 6, prod_nome, border=1)
-            pdf.cell(25, 6, str(row["Nº Caixa"]), border=1)
+            pdf.cell(85, 6, prod_nome, border=1)
+            pdf.cell(20, 6, str(row["Nº Caixa"]), border=1)
             pdf.cell(25, 6, str(row["Qtd Caixas"]), border=1)
+            pdf.cell(25, 6, str(row["Total Peças"]), border=1)
             pdf.ln()
 
         pdf.ln(6)
@@ -621,11 +582,11 @@ if st.session_state.processado and st.session_state.carrinho:
             data_formatada_arquivo = data_atual.strftime("%d-%m-%Y")
 
             cliente_informado = nome_cliente_input.strip()
-
-            if cliente_informado:
-                cliente_limpo = re.sub(r'[\\/*?:"<>|]', "", cliente_informado)
-            else:
-                cliente_limpo = "CLIENTE"
+            cliente_limpo = (
+                re.sub(r'[\\/*?:"<>|]', "", cliente_informado)
+                if cliente_informado
+                else "CLIENTE"
+            )
 
             nome_arquivo_pdf = f"PALETIZACAO_{cliente_limpo}_{data_formatada_arquivo}.pdf"
 
@@ -649,21 +610,22 @@ if st.session_state.processado and st.session_state.carrinho:
         df_p = df_pallets[df_pallets["ID"] == p_id]
         tipo_pallet = df_p["Tipo"].iloc[0]
         total_cx = int(df_p["Qtd Caixas"].sum())
+        total_pc = int(df_p["Total Peças"].sum())
 
         with st.expander(
-            f"📌 {p_id} - Total: {total_cx} caixas ({tipo_pallet})",
+            f"📌 {p_id} - Total: {total_cx} caixas / {total_pc} peças ({tipo_pallet})",
             expanded=True,
         ):
-            col_tabela, col_3d = st.columns([1, 1])
+            c_tbl, c_3d = st.columns([1, 1])
 
-            with col_tabela:
-                st.markdown("**Composição das Caixas:**")
+            with c_tbl:
+                st.markdown("**Composição detalhada:**")
                 st.dataframe(
-                    df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas"]],
+                    df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas", "Total Peças"]],
                     use_container_width=True,
                 )
 
-            with col_3d:
-                # --- RENDERIZAÇÃO 3D ATIVADA ---
-                fig_3d = gerar_grafico_3d_otimizado(df_p, f"Estrutura 3D - {p_id}")
+            with c_3d:
+                # Renderização da maquete 3D interativa
+                fig_3d = gerar_grafico_3d_otimizado(df_p, f"Visualização 3D - {p_id}")
                 st.plotly_chart(fig_3d, use_container_width=True)
