@@ -220,13 +220,13 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO OTIMIZADO ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_lista = []
     pallet_id = 1
-    sobras_lista = []
+    sobras_por_tipo_caixa = {}
 
-    # Passo 1: Extrair os pallets 100% fechados por SKU individual
+    # Passo 1: Separar Pallets 100% Fechados e organizar sobras por Tipo/Número de Caixa
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -240,6 +240,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         num_caixa = str(prod["NUMERO DA CAIXA"]).strip()
         pecas_por_caixa = int(prod["QUANTIDADE DE PEÇAS"])
 
+        # Pallets Fechados com o mesmo SKU
         qtd_pallets_fechados = qtd_total_caixas // cap_max_pallet
         resto = qtd_total_caixas % cap_max_pallet
 
@@ -259,8 +260,12 @@ def processar_pallets_operador(carrinho, df_produtos):
             })
             pallet_id += 1
 
+        # Agrupar sobras estritamente pelo tipo/número da caixa
         if resto > 0:
-            sobras_lista.append({
+            if num_caixa not in sobras_por_tipo_caixa:
+                sobras_por_tipo_caixa[num_caixa] = []
+
+            sobras_por_tipo_caixa[num_caixa].append({
                 "SKU": sku,
                 "Produto": prod["NOME DO PRODUTO"],
                 "Qtd Caixas": resto,
@@ -272,17 +277,16 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Capacidade_Max": cap_max_pallet,
             })
 
-    # Passo 2: Preenchimento contínuo das sobras
-    if sobras_lista:
+    # Passo 2: Processar as sobras separadamente por tipo de caixa
+    for num_caixa, lista_sobras in sobras_por_tipo_caixa.items():
         caixas_no_pallet_atual = 0
         itens_no_pallet = []
+        cap_alvo_pallet = lista_sobras[0]["Capacidade_Max"]
 
-        # Capacidade de referência padrão para pallets mistos de tamanho cheio
-        cap_alvo_pallet = sobras_lista[0]["Capacidade_Max"]
-
-        for row in sobras_lista:
+        for row in lista_sobras:
             qtd_restante = row["Qtd Caixas"]
             pecas_cx = row["Pecas_Por_Caixa"]
+            cx_fileira = row["Cx_Fileira"]
 
             while qtd_restante > 0:
                 espaco_disponivel = cap_alvo_pallet - caixas_no_pallet_atual
@@ -300,10 +304,17 @@ def processar_pallets_operador(carrinho, df_produtos):
                     pallet_id += 1
                     caixas_no_pallet_atual = 0
                     itens_no_pallet = []
-                    cap_alvo_pallet = row["Capacidade_Max"]
                     espaco_disponivel = cap_alvo_pallet
 
-                qtd_alocar = min(qtd_restante, espaco_disponivel)
+                # Garante prioridade por fileira completa (múltiplos de cx_fileira)
+                if qtd_restante >= cx_fileira and espaco_disponivel >= cx_fileira:
+                    fileiras_possiveis = min(
+                        qtd_restante // cx_fileira,
+                        espaco_disponivel // cx_fileira
+                    )
+                    qtd_alocar = fileiras_possiveis * cx_fileira
+                else:
+                    qtd_alocar = min(qtd_restante, espaco_disponivel)
 
                 itens_no_pallet.append({
                     "ID": "",
@@ -322,7 +333,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 caixas_no_pallet_atual += qtd_alocar
                 qtd_restante -= qtd_alocar
 
-        # Aloca as sobras residuais finais no último pallet do pedido
+        # Finalizar o pallet residual para o tipo de caixa atual
         if itens_no_pallet:
             pallet_label = f"Pallet {pallet_id}"
             qtd_skus = len({it["SKU"] for it in itens_no_pallet})
@@ -337,6 +348,8 @@ def processar_pallets_operador(carrinho, df_produtos):
                 it["ID"] = pallet_label
                 it["Tipo"] = tipo_str
                 pallets_lista.append(it)
+
+            pallet_id += 1
 
     return pd.DataFrame(pallets_lista)
 
