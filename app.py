@@ -9,7 +9,6 @@ import streamlit as st
 # Importação condicional do FPDF
 try:
     from fpdf import FPDF
-
     FPDF_DISPONIVEL = True
 except ImportError:
     FPDF_DISPONIVEL = False
@@ -76,6 +75,15 @@ def carregar_base(caminho_excel):
     df.columns = df.columns.str.strip()
     df["SKU"] = df["SKU"].astype(str).str.strip()
 
+    # Garantir conversão das colunas essenciais
+    df["QUANTIDADE DE CAIXAS POR FILEIRA"] = pd.to_numeric(
+        df["QUANTIDADE DE CAIXAS POR FILEIRA"], errors="coerce"
+    ).fillna(1)
+    df["ALTURA"] = pd.to_numeric(df["ALTURA"], errors="coerce").fillna(1)
+    df["QUANTIDADE DE CAIXAS NO PALLET"] = pd.to_numeric(
+        df["QUANTIDADE DE CAIXAS NO PALLET"], errors="coerce"
+    ).fillna(1)
+
     def extrair_num_caixa(val):
         try:
             return int(str(val).upper().replace("CAIXA", "").strip())
@@ -95,9 +103,7 @@ for c in caminhos_possiveis:
         break
 
 if not CAMINHO_EXCEL:
-    st.error(
-        "⚠️ O arquivo 'COMEX.xlsx' não foi encontrado no diretório do projeto."
-    )
+    st.error("⚠️ O arquivo 'COMEX.xlsx' não foi encontrado no diretório do projeto.")
     st.stop()
 
 try:
@@ -127,7 +133,9 @@ st.sidebar.info(f"""
 **Informações do Cadastro:**  
 • **Caixa Tipo:** {prod_info['NUMERO DA CAIXA']}  
 • **Peças/Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
-• **Capacidade Pallet Fechado:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx
+• **Caixas/Fileira:** {int(prod_info['QUANTIDADE DE CAIXAS POR FILEIRA'])}  
+• **Limite de Altura (Fileiras):** {int(prod_info['ALTURA'])}  
+• **Capacidade Pallet Fechado:** {int(prod_info['QUANTIDADE DE CAIXAS NO PALLET'])} cx
 """)
 
 qtd_solicitada = st.sidebar.number_input(
@@ -223,7 +231,7 @@ else:
 st.markdown("---")
 
 
-# --- 7. ALGORITMO DE PALETIZAÇÃO ---
+# --- 7. ALGORITMO DE PALETIZAÇÃO COM VALIDAÇÃO DE ALTURA (FILEIRAS MÁXIMAS) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_lista = []
     pallet_id = 1
@@ -234,7 +242,16 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd = int(item["Qtd_Caixas"])
 
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
-        cap_pallet = int(prod["QUANTIDADE DE CAIXAS NO PALLET"])
+
+        # Respeita o limite de caixas por pallet vindo do cadastro e valida contra limite de altura em fileiras
+        cx_por_fileira = max(1, int(prod.get("QUANTIDADE DE CAIXAS POR FILEIRA", 1)))
+        altura_max_fileiras = max(1, int(prod.get("ALTURA", 1)))
+        cap_pallet_cadastro = int(prod["QUANTIDADE DE CAIXAS NO PALLET"])
+
+        # Capacidade máxima restrita pela altura (Fileiras * Caixas/Fileira)
+        cap_max_altura = cx_por_fileira * altura_max_fileiras
+        cap_pallet = min(cap_pallet_cadastro, cap_max_altura)
+
         ordem_cx = int(prod.get("Ordem_Caixa", 0))
         num_caixa = str(prod["NUMERO DA CAIXA"]).strip()
 
@@ -251,6 +268,8 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Nº Caixa": num_caixa,
                 "Ordem_Caixa": ordem_cx,
                 "Capacidade_Max": cap_pallet,
+                "Cx_Fileira": cx_por_fileira,
+                "Altura_Max": altura_max_fileiras,
             })
             pallet_id += 1
 
@@ -262,6 +281,8 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Nº Caixa": num_caixa,
                 "Ordem_Caixa": ordem_cx,
                 "Capacidade_Max": cap_pallet,
+                "Cx_Fileira": cx_por_fileira,
+                "Altura_Max": altura_max_fileiras,
             })
 
     if sobras_por_sku:
@@ -273,9 +294,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             cap_max_tipo = df_grupo["Capacidade_Max"].iloc[0]
             fracao_unidade = 1.0 / cap_max_tipo
 
-            pallet_mesmo_tipo_id = (
-                f"Pallet {pallet_id} (Sobras - Caixa {num_caixa_tipo})"
-            )
+            pallet_mesmo_tipo_id = f"Pallet {pallet_id} (Sobras - Caixa {num_caixa_tipo})"
             capacidade_usada = 0.0
             itens_no_pallet_atual = []
 
@@ -309,6 +328,8 @@ def processar_pallets_operador(carrinho, df_produtos):
                         "Nº Caixa": row["Nº Caixa"],
                         "Ordem_Caixa": ordem_cx,
                         "Capacidade_Max": cap_max_tipo,
+                        "Cx_Fileira": row["Cx_Fileira"],
+                        "Altura_Max": row["Altura_Max"],
                     })
 
                     capacidade_usada += fracao_alocada
@@ -362,6 +383,8 @@ def processar_pallets_operador(carrinho, df_produtos):
                         "Nº Caixa": row["Nº Caixa"],
                         "Ordem_Caixa": row["Ordem_Caixa"],
                         "Capacidade_Max": cap_max,
+                        "Cx_Fileira": row["Cx_Fileira"],
+                        "Altura_Max": row["Altura_Max"],
                     })
 
                     cap_usada_ultimo += fracao_alocada
@@ -370,7 +393,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     return pd.DataFrame(pallets_lista)
 
 
-# --- 8. GERADOR DE MODELO 3D (DESATIVADO NA EXIBIÇÃO) ---
+# --- 8. GERADOR DE MODELO 3D (ATIVO) ---
 def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
     fig = go.Figure()
 
@@ -593,12 +616,10 @@ if st.session_state.processado and st.session_state.carrinho:
 
     if FPDF_DISPONIVEL:
         try:
-            # Data
             data_atual = datetime.now()
             data_formatada_pdf = data_atual.strftime("%d/%m/%Y")
             data_formatada_arquivo = data_atual.strftime("%d-%m-%Y")
 
-            # Tratamento do Nome do Cliente mantendo a grafia original
             cliente_informado = nome_cliente_input.strip()
 
             if cliente_informado:
@@ -606,10 +627,8 @@ if st.session_state.processado and st.session_state.carrinho:
             else:
                 cliente_limpo = "CLIENTE"
 
-            # Nome do Arquivo PDF: PALETIZACAO_{NOME DO CLIENTE}_{DATA}.pdf
             nome_arquivo_pdf = f"PALETIZACAO_{cliente_limpo}_{data_formatada_arquivo}.pdf"
 
-            # Geração do PDF
             pdf_bytes = gerar_pdf(
                 df_pallets, cliente_informado, data_formatada_pdf
             )
@@ -635,13 +654,16 @@ if st.session_state.processado and st.session_state.carrinho:
             f"📌 {p_id} - Total: {total_cx} caixas ({tipo_pallet})",
             expanded=True,
         ):
-            # A exibição da coluna 3D foi removida e a tabela ocupa 100% da largura
-            st.markdown("**Composição das Caixas:**")
-            st.dataframe(
-                df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas"]],
-                use_container_width=True,
-            )
+            col_tabela, col_3d = st.columns([1, 1])
 
-            # --- RENDERIZAÇÃO 3D TEMPORARIAMENTE OCULTADA ---
-            # fig_3d = gerar_grafico_3d_otimizado(df_p, f"Estrutura 3D - {p_id}")
-            # st.plotly_chart(fig_3d, use_container_width=True)
+            with col_tabela:
+                st.markdown("**Composição das Caixas:**")
+                st.dataframe(
+                    df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas"]],
+                    use_container_width=True,
+                )
+
+            with col_3d:
+                # --- RENDERIZAÇÃO 3D ATIVADA ---
+                fig_3d = gerar_grafico_3d_otimizado(df_p, f"Estrutura 3D - {p_id}")
+                st.plotly_chart(fig_3d, use_container_width=True)
