@@ -39,7 +39,7 @@ st.markdown(
 st.title("📦 Sistema de Paletização - COMEX")
 st.markdown("---")
 
-# --- 2. DIMENSOES DAS CAIXAS (em metros para exibição 3D) ---
+# --- 2. DIMENSÕES DAS CAIXAS (em metros para exibição 3D) ---
 DIMENSOES_CAIXAS = {
     "CAIXA 0": {"comp": 0.230, "larg": 0.145, "alt": 0.125},
     "CAIXA 1": {"comp": 0.285, "larg": 0.155, "alt": 0.125},
@@ -60,7 +60,6 @@ def carregar_base(caminho_excel):
     df = pd.read_excel(caminho_excel)
     df.columns = df.columns.str.strip()
 
-    # Tratamento e conversão de colunas numéricas
     df["SKU"] = df["SKU"].astype(str).str.strip()
     df["NOME DO PRODUTO"] = df["NOME DO PRODUTO"].astype(str).str.strip()
     df["NUMERO DA CAIXA"] = df["NUMERO DA CAIXA"].astype(str).str.strip()
@@ -86,8 +85,6 @@ def carregar_base(caminho_excel):
             return 0
 
     df["Ordem_Caixa"] = df["NUMERO DA CAIXA"].apply(extrair_num_caixa)
-
-    # Capacidade total recalculada por fileira e altura do SKU específico
     df["CAPACIDADE_CALCULADA_PALLET"] = (
         df["QUANTIDADE DE CAIXAS POR FILEIRA"] * df["ALTURA"]
     )
@@ -164,7 +161,9 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
             "Pecas_Por_Caixa": int(prod_info["QUANTIDADE DE PEÇAS"]),
             "Caixas_Por_Fileira": int(prod_info["QUANTIDADE DE CAIXAS POR FILEIRA"]),
             "Altura_Max_Fileiras": int(prod_info["ALTURA"]),
-            "Unidades_Pecas_Pallet": int(prod_info["QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET"]),
+            "Unidades_Pecas_Pallet": int(
+                prod_info["QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET"]
+            ),
         })
     st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
@@ -237,12 +236,13 @@ else:
 st.markdown("---")
 
 
-# --- 7. ALGORITMO DE PALETIZAÇÃO OTIMIZADO ---
+# --- 7. ALGORITMO DE PALETIZAÇÃO (PALLETS FECHADOS + ÚLTIMO FRACIONADO) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_lista = []
     pallet_id = 1
     sobras_por_sku = []
 
+    # Passo 1: Separar os pallets fechados por SKU individual
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -259,7 +259,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd_pallets_fechados = qtd_total_caixas // cap_max_pallet
         resto = qtd_total_caixas % cap_max_pallet
 
-        # Pallets fechados monoproduto
         for _ in range(qtd_pallets_fechados):
             pallets_lista.append({
                 "ID": f"Pallet {pallet_id}",
@@ -289,7 +288,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Capacidade_Max": cap_max_pallet,
             })
 
-    # Tratamento de sobras: agrupa por tipo de caixa e aloca minimizando a mistura de SKUs
+    # Passo 2: Consolidação das sobras fecham o máximo de pallets possível
     if sobras_por_sku:
         df_sobras = pd.DataFrame(sobras_por_sku)
 
@@ -310,7 +309,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                     espaco_disponivel = cap_max_tipo - caixas_no_pallet_atual
 
                     if espaco_disponivel == 0:
-                        # Pallet misto cheio: fecha o pallet antes de incluir novas caixas
                         pallet_label = f"Pallet {pallet_id} (Misto - Caixa {num_caixa_tipo})"
                         qtd_skus = len({it["SKU"] for it in itens_no_pallet})
                         tipo_str = "Misto Fechado 🟡" if qtd_skus > 1 else "Fechado 🟢"
@@ -343,7 +341,8 @@ def processar_pallets_operador(carrinho, df_produtos):
                     caixas_no_pallet_atual += qtd_alocar
                     qtd_restante -= qtd_alocar
 
-            # Último pallet restante daquele tipo de caixa
+            # Caso as sobras completem o pallet exato, gera Fechado/Misto Fechado. 
+            # Se sobrar menos que a capacidade total, esse torna-se o ÚNICO pallet fracionado ao final do grupo.
             if itens_no_pallet:
                 pallet_label = f"Pallet {pallet_id} (Misto - Caixa {num_caixa_tipo})"
                 qtd_skus = len({it["SKU"] for it in itens_no_pallet})
@@ -352,7 +351,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 if is_full:
                     tipo_str = "Misto Fechado 🟡" if qtd_skus > 1 else "Fechado 🟢"
                 else:
-                    tipo_str = "Misto Fracionado 🟠" if qtd_skus > 1 else "Fracionado 🟠"
+                    tipo_str = "Pallet Final (Fracionado) 🟠"
 
                 for it in itens_no_pallet:
                     it["ID"] = pallet_label
@@ -571,7 +570,9 @@ if st.session_state.processado and st.session_state.carrinho:
                 else "CLIENTE"
             )
 
-            nome_arquivo_pdf = f"PALETIZACAO_{cliente_limpo}_{data_formatada_arquivo}.pdf"
+            nome_arquivo_pdf = (
+                f"PALETIZACAO_{cliente_limpo}_{data_formatada_arquivo}.pdf"
+            )
 
             pdf_bytes = gerar_pdf(
                 df_pallets, cliente_informado, data_formatada_pdf
@@ -609,6 +610,5 @@ if st.session_state.processado and st.session_state.carrinho:
                 )
 
             with c_3d:
-                # Renderização da maquete 3D interativa
                 fig_3d = gerar_grafico_3d_otimizado(df_p, f"Visualização 3D - {p_id}")
                 st.plotly_chart(fig_3d, use_container_width=True)
