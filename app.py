@@ -1,9 +1,7 @@
 from datetime import datetime
 import os
 import re
-import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 # Importação condicional do FPDF
@@ -39,22 +37,8 @@ st.markdown(
 st.title("📦 Sistema de Paletização - COMEX")
 st.markdown("---")
 
-# --- 2. DIMENSÕES DAS CAIXAS ---
-DIMENSOES_CAIXAS = {
-    "CAIXA 0": {"comp": 0.230, "larg": 0.145, "alt": 0.125},
-    "CAIXA 1": {"comp": 0.285, "larg": 0.155, "alt": 0.125},
-    "CAIXA 2": {"comp": 0.295, "larg": 0.185, "alt": 0.130},
-    "CAIXA 3": {"comp": 0.375, "larg": 0.195, "alt": 0.145},
-}
 
-
-def obter_dimensoes_caixa(num_caixa):
-    num_str = str(num_caixa).upper().strip()
-    key = f"CAIXA {num_str}" if "CAIXA" not in num_str else num_str
-    return DIMENSOES_CAIXAS.get(key, {"comp": 0.300, "larg": 0.200, "alt": 0.150})
-
-
-# --- 3. CARREGAMENTO E TRATAMENTO DA BASE DE DADOS ---
+# --- 2. CARREGAMENTO E TRATAMENTO DA BASE DE DADOS ---
 @st.cache_data
 def carregar_base(caminho_excel):
     df = pd.read_excel(caminho_excel)
@@ -112,14 +96,14 @@ except Exception as e:
     st.error(f"Erro ao carregar a base de dados ({CAMINHO_EXCEL}): {e}")
     st.stop()
 
-# --- 4. ESTADO DA SESSÃO ---
+# --- 3. ESTADO DA SESSÃO ---
 if "carrinho" not in st.session_state:
     st.session_state.carrinho = []
 
 if "processado" not in st.session_state:
     st.session_state.processado = False
 
-# --- 5. PAINEL LATERAL ---
+# --- 4. PAINEL LATERAL ---
 st.sidebar.header("📋 Inserir Pedido")
 opcoes_produtos = df_produtos["SKU"] + " - " + df_produtos["NOME DO PRODUTO"]
 produto_selecionado = st.sidebar.selectbox(
@@ -168,7 +152,7 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
     st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
 
-# --- 6. IDENTIFICAÇÃO DO CLIENTE ---
+# --- 5. IDENTIFICAÇÃO DO CLIENTE ---
 st.markdown(
     """
 <div class="cliente-box">
@@ -236,7 +220,7 @@ else:
 st.markdown("---")
 
 
-# --- 7. ALGORITMO DE PALETIZAÇÃO REVISADO (EXATAMENTE COMO O MODELO) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_lista = []
     pallet_id = 1
@@ -292,8 +276,8 @@ def processar_pallets_operador(carrinho, df_produtos):
     if sobras_lista:
         caixas_no_pallet_atual = 0
         itens_no_pallet = []
-        
-        # Capacidade de referência padrão para pallets mistos de tamanho cheio (ex: 80 ou 64 caixas)
+
+        # Capacidade de referência padrão para pallets mistos de tamanho cheio
         cap_alvo_pallet = sobras_lista[0]["Capacidade_Max"]
 
         for row in sobras_lista:
@@ -312,7 +296,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                         it["ID"] = pallet_label
                         it["Tipo"] = tipo_str
                         pallets_lista.append(it)
-                    
+
                     pallet_id += 1
                     caixas_no_pallet_atual = 0
                     itens_no_pallet = []
@@ -342,7 +326,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         if itens_no_pallet:
             pallet_label = f"Pallet {pallet_id}"
             qtd_skus = len({it["SKU"] for it in itens_no_pallet})
-            is_full = (caixas_no_pallet_atual == cap_alvo_pallet)
+            is_full = caixas_no_pallet_atual == cap_alvo_pallet
 
             if is_full:
                 tipo_str = "Misto Fechado 🟡" if qtd_skus > 1 else "Fechado 🟢"
@@ -357,120 +341,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     return pd.DataFrame(pallets_lista)
 
 
-# --- 8. GERADOR DO MODELO 3D ---
-def gerar_grafico_3d_otimizado(df_pallet_especifico, titulo):
-    fig = go.Figure()
-
-    paleta_cores = [
-        "#0055B8",
-        "#10B981",
-        "#EF4444",
-        "#8B5CF6",
-        "#F59E0B",
-        "#D9A036",
-    ]
-    skus_unicos = df_pallet_especifico["SKU"].unique()
-    cor_map = {
-        sku: paleta_cores[i % len(paleta_cores)]
-        for i, sku in enumerate(skus_unicos)
-    }
-
-    df_ordenado = df_pallet_especifico.sort_values(
-        by=["Ordem_Caixa", "SKU"], ascending=[False, True]
-    )
-
-    lista_caixas_individuais = []
-    for _, row in df_ordenado.iterrows():
-        sku = row["SKU"]
-        qtd = int(row["Qtd Caixas"])
-        cor = cor_map[sku]
-        cx_nome = row["Nº Caixa"]
-        dims = obter_dimensoes_caixa(cx_nome)
-        ordem = row["Ordem_Caixa"]
-        cx_fileira = row["Cx_Fileira"]
-
-        for _ in range(qtd):
-            lista_caixas_individuais.append({
-                "sku": sku,
-                "cor": cor,
-                "cx_nome": cx_nome,
-                "ordem": ordem,
-                "dims": dims,
-                "cx_fileira": cx_fileira,
-            })
-
-    if not lista_caixas_individuais:
-        return fig
-
-    x_cube = [0, 1, 1, 0, 0, 1, 1, 0]
-    y_cube = [0, 0, 1, 1, 0, 0, 1, 1]
-    z_cube = [0, 0, 0, 0, 1, 1, 1, 1]
-    i_mesh = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
-    j_mesh = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
-    k_mesh = [0, 7, 2, 3, 6, 7, 1, 1, 1, 5, 2, 7]
-
-    z_atual = 0.0
-    idx = 0
-    total_caixas = len(lista_caixas_individuais)
-
-    while idx < total_caixas:
-        cx_ref = lista_caixas_individuais[idx]
-        dims = cx_ref["dims"]
-
-        dx, dy = dims["comp"], dims["larg"]
-        dz = dims["alt"]
-        caixas_por_camada = max(1, cx_ref["cx_fileira"])
-        cols_x = int(np.ceil(np.sqrt(caixas_por_camada)))
-
-        qtd_camada = min(total_caixas - idx, caixas_por_camada)
-
-        for i in range(qtd_camada):
-            item = lista_caixas_individuais[idx + i]
-            cx_i = i % cols_x
-            cy_i = i // cols_x
-
-            x0 = cx_i * dx
-            y0 = cy_i * dy
-
-            x_box = [x0 + vx * (dx * 0.98) for vx in x_cube]
-            y_box = [y0 + vy * (dy * 0.98) for vy in y_cube]
-            z_box = [z_atual + vz * dz for vz in z_cube]
-
-            fig.add_trace(
-                go.Mesh3d(
-                    x=x_box,
-                    y=y_box,
-                    z=z_box,
-                    i=i_mesh,
-                    j=j_mesh,
-                    k=k_mesh,
-                    color=item["cor"],
-                    flatshading=True,
-                    lighting=dict(ambient=0.85, diffuse=0.9),
-                    hoverinfo="text",
-                    text=f"<b>SKU:</b> {item['sku']}<br><b>Caixa:</b> {item['cx_nome']}<br><b>Dimensões:</b> {int(dx*1000)}x{int(dy*1000)}x{int(dz*1000)} mm",
-                    showscale=False,
-                )
-            )
-
-        idx += qtd_camada
-        z_atual += dz
-
-    fig.update_layout(
-        title=f"{titulo} ({total_caixas} caixas)",
-        scene=dict(
-            xaxis=dict(title="Comp", showgrid=True),
-            yaxis=dict(title="Larg", showgrid=True),
-            zaxis=dict(title="Alt", showgrid=True),
-            aspectmode="data",
-        ),
-        margin=dict(l=0, r=0, b=0, t=35),
-        showlegend=False,
-    )
-    return fig
-
-
-# --- 9. GERADOR DE PDF ---
+# --- 7. GERADOR DE PDF ---
 def gerar_pdf(df_pallets, cliente, data_str):
     pdf = FPDF()
     pdf.add_page()
@@ -536,7 +407,7 @@ def gerar_pdf(df_pallets, cliente, data_str):
     return bytes(pdf.output())
 
 
-# --- 10. EXECUÇÃO E RESULTADOS ---
+# --- 8. EXECUÇÃO E RESULTADOS ---
 if st.button("⚙️ CALCULAR E GERAR PALLETS"):
     if not st.session_state.carrinho:
         st.warning("Adicione itens ao pedido antes de calcular.")
@@ -595,15 +466,8 @@ if st.session_state.processado and st.session_state.carrinho:
             f"📌 {p_id} - Total: {total_cx} caixas / {total_pc} peças ({tipo_pallet})",
             expanded=True,
         ):
-            c_tbl, c_3d = st.columns([1, 1])
-
-            with c_tbl:
-                st.markdown("**Composição detalhada:**")
-                st.dataframe(
-                    df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas", "Total Peças"]],
-                    use_container_width=True,
-                )
-
-            with c_3d:
-                fig_3d = gerar_grafico_3d_otimizado(df_p, f"Visualização 3D - {p_id}")
-                st.plotly_chart(fig_3d, use_container_width=True)
+            st.markdown("**Composição detalhada:**")
+            st.dataframe(
+                df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas", "Total Peças"]],
+                use_container_width=True,
+            )
