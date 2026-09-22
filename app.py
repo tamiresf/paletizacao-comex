@@ -274,7 +274,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd_pallets_fechados = qtd_total_caixas // cap_max_pallet
         resto = qtd_total_caixas % cap_max_pallet
 
-        # Pallets fechados do mesmo SKU
+        # Pallets fechados do mesmo SKU (100% monoproduto)
         for _ in range(qtd_pallets_fechados):
             pallets_lista.append({
                 "ID": f"Pallet {pallet_id}",
@@ -296,7 +296,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "SKU": sku,
                 "Produto": prod["NOME DO PRODUTO"],
                 "Qtd Caixas": resto,
-                "Total Peças": resto * pecas_por_caixa,
+                "Pecas_Por_Caixa": pecas_por_caixa,
                 "Nº Caixa": num_caixa,
                 "Ordem_Caixa": ordem_cx,
                 "Cx_Fileira": cx_fileira,
@@ -304,7 +304,8 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Capacidade_Max": cap_max_pallet,
             })
 
-    # Tratamento de sobras (Pallets Mistos respeitando a regra de caixa/fileira/altura)
+    # Tratamento das sobras (agrupando por tipo de caixa)
+    # Regra: Fechar SEMPRE os pallets mistos intermediários e fracionar APENAS o último pallet misto
     if sobras_por_sku:
         df_sobras = pd.DataFrame(sobras_por_sku)
 
@@ -314,21 +315,24 @@ def processar_pallets_operador(carrinho, df_produtos):
             altura_max_tipo = df_grupo["Altura_Max"].iloc[0]
             cap_max_tipo = cx_fileira_tipo * altura_max_tipo
 
-            pallet_mesmo_tipo_id = f"Pallet {pallet_id} (Misto - Caixa {num_caixa_tipo})"
             caixas_no_pallet_atual = 0
             itens_no_pallet = []
 
             for _, row in df_grupo.iterrows():
                 qtd_restante = row["Qtd Caixas"]
+                pecas_cx = row["Pecas_Por_Caixa"]
 
                 while qtd_restante > 0:
                     espaco_disponivel = cap_max_tipo - caixas_no_pallet_atual
 
+                    # Se o pallet atual encheu, descarrega com tag 'Misto (Fechado)'
                     if espaco_disponivel == 0:
+                        pallet_label = f"Pallet {pallet_id} (Misto - Caixa {num_caixa_tipo})"
                         for it in itens_no_pallet:
+                            it["ID"] = pallet_label
+                            it["Tipo"] = "Misto Fechado 🟡"
                             pallets_lista.append(it)
                         pallet_id += 1
-                        pallet_mesmo_tipo_id = f"Pallet {pallet_id} (Misto - Caixa {num_caixa_tipo})"
                         caixas_no_pallet_atual = 0
                         itens_no_pallet = []
                         espaco_disponivel = cap_max_tipo
@@ -336,12 +340,12 @@ def processar_pallets_operador(carrinho, df_produtos):
                     qtd_alocar = min(qtd_restante, espaco_disponivel)
 
                     itens_no_pallet.append({
-                        "ID": pallet_mesmo_tipo_id,
-                        "Tipo": "Misto (Mesma Caixa) 🟡",
+                        "ID": "",  # Definido na finalização do pallet
+                        "Tipo": "",
                         "SKU": row["SKU"],
                         "Produto": row["Produto"],
                         "Qtd Caixas": qtd_alocar,
-                        "Total Peças": qtd_alocar * (row["Total Peças"] // row["Qtd Caixas"]),
+                        "Total Peças": qtd_alocar * pecas_cx,
                         "Nº Caixa": row["Nº Caixa"],
                         "Ordem_Caixa": ordem_cx,
                         "Cx_Fileira": cx_fileira_tipo,
@@ -352,8 +356,15 @@ def processar_pallets_operador(carrinho, df_produtos):
                     caixas_no_pallet_atual += qtd_alocar
                     qtd_restante -= qtd_alocar
 
+            # Processa o último lote de itens do grupo (Último Pallet Misto)
             if itens_no_pallet:
+                pallet_label = f"Pallet {pallet_id} (Misto - Caixa {num_caixa_tipo})"
+                is_full = (caixas_no_pallet_atual == cap_max_tipo)
+                tipo_str = "Misto Fechado 🟡" if is_full else "Misto Fracionado 🟠"
+
                 for it in itens_no_pallet:
+                    it["ID"] = pallet_label
+                    it["Tipo"] = tipo_str
                     pallets_lista.append(it)
                 pallet_id += 1
 
