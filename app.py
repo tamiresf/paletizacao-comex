@@ -69,9 +69,6 @@ def carregar_base(caminho_excel):
             return 0
 
     df["Ordem_Caixa"] = df["NUMERO DA CAIXA"].apply(extrair_num_caixa)
-    df["CAPACIDADE_CALCULADA_PALLET"] = (
-        df["QUANTIDADE DE CAIXAS POR FILEIRA"] * df["ALTURA"]
-    )
 
     return df
 
@@ -119,13 +116,13 @@ st.sidebar.info(f"""
 • **Peças / Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
 • **Caixas / Fileira:** {prod_info['QUANTIDADE DE CAIXAS POR FILEIRA']}  
 • **Altura Máx. (Fileiras):** {prod_info['ALTURA']}  
-• **Capacidade Pallet Fechado:** {prod_info['CAPACIDADE_CALCULADA_PALLET']} cx ({prod_info['QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET']} peças)
+• **Capacidade Pallet Fechado:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx ({prod_info['QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET']} peças)
 """)
 
 qtd_solicitada = st.sidebar.number_input(
     "Qtd de Caixas Solicitada:",
     min_value=1,
-    value=int(prod_info["CAPACIDADE_CALCULADA_PALLET"]),
+    value=int(prod_info["QUANTIDADE DE CAIXAS NO PALLET"]),
     step=1,
 )
 
@@ -220,22 +217,21 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO (ORDENADO CRONOLOGICAMENTE) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO OTIMIZADO ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
     sobras_por_tipo_caixa = {}
 
-    # Passo 1: Separar Pallets 100% Fechados e agrupar sobras por tipo de caixa
+    # Passo 1: Separar Pallets Fechados com base no limite real da coluna QUANTIDADE DE CAIXAS NO PALLET
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
 
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
 
-        cx_fileira = int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
-        altura_max_fileiras = int(prod["ALTURA"])
-        cap_max_pallet = cx_fileira * altura_max_fileiras
+        # Usa diretamente o valor cadastrado na coluna QUANTIDADE DE CAIXAS NO PALLET
+        cap_max_pallet = int(prod["QUANTIDADE DE CAIXAS NO PALLET"])
         ordem_cx = int(prod.get("Ordem_Caixa", 0))
         num_caixa = str(prod["NUMERO DA CAIXA"]).strip()
         pecas_por_caixa = int(prod["QUANTIDADE DE PEÇAS"])
@@ -258,6 +254,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             })
             pallet_num += 1
 
+        # Sobras agrupadas estritamente pelo tipo/número da caixa
         if resto > 0:
             if num_caixa not in sobras_por_tipo_caixa:
                 sobras_por_tipo_caixa[num_caixa] = []
@@ -272,7 +269,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Capacidade_Max": cap_max_pallet,
             })
 
-    # Passo 2: Alocar sobras mantendo numeração sequencial
+    # Passo 2: Consolidar as sobras no mesmo pallet até atingir a capacidade real
     for num_caixa, lista_sobras in sobras_por_tipo_caixa.items():
         caixas_no_pallet_atual = 0
         itens_no_pallet = []
@@ -319,6 +316,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 caixas_no_pallet_atual += qtd_alocar
                 qtd_restante -= qtd_alocar
 
+        # Fecha o último pallet com o restante das sobras daquele tipo de caixa
         if itens_no_pallet:
             pallet_label = f"Pallet {pallet_num:02d}"
             qtd_skus = len({it["SKU"] for it in itens_no_pallet})
@@ -341,7 +339,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     if df_temp.empty:
         return df_temp
 
-    # Passo 3: Consolidar total por SKU mantendo ordenação numérica do pallet
+    # Passo 3: Consolidar totais por SKU mantendo a sequência numérica
     df_consolidado = (
         df_temp.groupby(
             ["Pallet_Num", "ID", "Tipo", "SKU", "Produto", "Nº Caixa"],
@@ -354,7 +352,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     return df_consolidado
 
 
-# --- 7. GERADOR DE PDF (COM ORDENAÇÃO NUMÉRICA) ---
+# --- 7. GERADOR DE PDF ---
 def gerar_pdf(df_pallets, cliente, data_str):
     pdf = FPDF()
     pdf.add_page()
@@ -373,7 +371,6 @@ def gerar_pdf(df_pallets, cliente, data_str):
     pdf.cell(0, 5, f"Data de Emissão: {data_str}", align="C")
     pdf.ln(12)
 
-    # Ordenação estrita por Pallet_Num
     pallets_ordenados = df_pallets.sort_values("Pallet_Num")["ID"].unique()
 
     for p_id in pallets_ordenados:
