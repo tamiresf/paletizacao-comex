@@ -219,13 +219,12 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO (RESPEITANDO ALTURA/FILEIRAS E MISTOS FECHADOS) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
     sobras_por_tipo_caixa = {}
 
-    # Passo 1: Separar Pallets Fechados respeitando limite de capacidade e altura (fileiras) por SKU
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -242,7 +241,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd_pallets_fechados = qtd_total_caixas // cap_max_caixas
         resto = qtd_total_caixas % cap_max_caixas
 
-        # Adiciona pallets completos fechados individuais
         for _ in range(qtd_pallets_fechados):
             pallets_bruto.append({
                 "Pallet_Num": pallet_num,
@@ -259,7 +257,6 @@ def processar_pallets_operador(carrinho, df_produtos):
             })
             pallet_num += 1
 
-        # Acumula as sobras por numeração da caixa para formar pallets mistos ou o fracionado final
         if resto > 0:
             if num_caixa not in sobras_por_tipo_caixa:
                 sobras_por_tipo_caixa[num_caixa] = []
@@ -276,7 +273,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Capacidade_Max_Caixas": cap_max_caixas,
             })
 
-    # Passo 2: Formar pallets mistos fechados por tipo/numeração de caixa usando as sobras, respeitando a capacidade máxima
     sobras_nao_alocadas = []
 
     for num_cx, lista_sobras in sobras_por_tipo_caixa.items():
@@ -349,7 +345,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                 for it in itens_no_pallet_atual:
                     sobras_nao_alocadas.append(it)
 
-    # Passo 3: Criar APENAS UM ÚLTIMO PALLET FRACIONADO para resíduos finais
     if sobras_nao_alocadas:
         pallet_label = f"Pallet {pallet_num:02d}"
         for it in sobras_nao_alocadas:
@@ -372,7 +367,6 @@ def processar_pallets_operador(carrinho, df_produtos):
     if df_temp.empty:
         return df_temp
 
-    # Passo 4: Organização final garantindo que as caixas maiores fiquem embaixo (Ordem_Caixa decrescente)
     df_consolidado = (
         df_temp.sort_values(
             by=["Pallet_Num", "Ordem_Caixa"], ascending=[True, False]
@@ -430,7 +424,7 @@ def gerar_pdf(df_pallets, cliente, data_str):
         pdf.cell(
             0,
             8,
-            f"{p_id} | Tipo: {tipo_limpo} | Total: {total_cx} caixas ({total_pecas} peças)",
+            f"{p_id} | Tipo: {tipo_limpo} | Total de Caixas: {total_cx} cx ({total_pecas} peças)",
             border="B",
         )
         pdf.ln(10)
@@ -524,7 +518,7 @@ if st.session_state.processado and st.session_state.carrinho:
         total_pc = int(df_p["Total Peças"].sum())
 
         with st.expander(
-            f"📌 {p_id} - Total: {total_cx} caixas / {total_pc} peças ({tipo_pallet})",
+            f"📌 {p_id} - Total de Caixas: {total_cx} cx | Total de Peças: {total_pc} peças ({tipo_pallet})",
             expanded=True,
         ):
             st.markdown(
