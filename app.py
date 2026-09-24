@@ -551,7 +551,7 @@ if st.session_state.processado and st.session_state.carrinho:
             st.markdown(
                 f"""
                 <div style="text-align: right;">
-                    <span class="total-caixas-destaque">📦 Total de Caixas do Pallet: {total_cx} cx</span>
+                    <span class="total-caixas-destaque">📦 Total de Caixas no Pallet: {total_cx} cx</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
