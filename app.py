@@ -115,7 +115,7 @@ st.sidebar.info(f"""
 • **Tipo da Caixa:** Caixa {prod_info['NUMERO DA CAIXA']}  
 • **Peças / Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
 • **Caixas / Fileira:** {prod_info['QUANTIDADE DE CAIXAS POR FILEIRA']}  
-• **Altura Máx. (Fileiras):** {prod_info['ALTURA']}  
+• **Quantidade de Fileiras no Pallet:** {prod_info['ALTURA']}  
 • **Capacidade Caixas / Pallet:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx  
 • **Capacidade Peças / Pallet:** {prod_info['QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET']} peças
 """)
@@ -142,7 +142,7 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
             "Qtd_Caixas": qtd_solicitada,
             "Pecas_Por_Caixa": int(prod_info["QUANTIDADE DE PEÇAS"]),
             "Caixas_Por_Fileira": int(prod_info["QUANTIDADE DE CAIXAS POR FILEIRA"]),
-            "Altura_Max_Fileiras": int(prod_info["ALTURA"]),
+            "Quantidade_Fileiras": int(prod_info["ALTURA"]),
             "Capacidade_Pallet_Caixas": int(prod_info["QUANTIDADE DE CAIXAS NO PALLET"]),
             "Capacidade_Pallet_Pecas": int(
                 prod_info["QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET"]
