@@ -229,12 +229,13 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO (GARANTE SOBRAS UNIDAS POR SKU ATÉ O LIMITE) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO INTELIGENTE POR FILEIRAS E BLOCOS ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
     sobras_por_tipo_caixa = {}
 
+    # Passo 1: Alocar pallets 100% fechados por SKU
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -283,18 +284,19 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Capacidade_Max_Caixas": cap_max_caixas,
             })
 
-    # Construção inteligente dos pallets de sobras (mantendo SKUs inteiros juntos no pallet sempre que couber)
+    # Passo 2: Montagem inteligente das sobras baseada em fileiras e capacidade máxima
     pallet_atual_caixas = 0
     pallet_atual_itens = []
-    cap_pallet_atual = 64  # Valor de referência padrão, atualizado dinamicamente
+    cap_pallet_atual = 64  # Será ajustado pelo SKU
 
     for num_cx, lista_sobras in sobras_por_tipo_caixa.items():
         for row in lista_sobras:
             sku_sobra_qtd = row["Qtd Caixas"]
             cap_max_sku = row["Capacidade_Max_Caixas"]
+            cx_por_fileira = row["Caixas_Por_Fileira"]
             cap_pallet_atual = cap_max_sku
 
-            # Se o pallet atual está vazio, tentamos colocar a sobra inteira do SKU nele
+            # Se o pallet atual está vazio, tentamos acomodar a sobra do SKU respeitando fileiras
             if pallet_atual_caixas == 0:
                 if sku_sobra_qtd <= cap_pallet_atual:
                     pallet_atual_itens.append({
@@ -304,53 +306,55 @@ def processar_pallets_operador(carrinho, df_produtos):
                         "Total Peças": sku_sobra_qtd * row["Pecas_Por_Caixa"],
                         "Nº Caixa": row["Nº Caixa"],
                         "Ordem_Caixa": row["Ordem_Caixa"],
-                        "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
+                        "Caixas_Por_Fileira": cx_por_fileira,
                         "Quantidade_Fileiras": row["Quantidade_Fileiras"],
                     })
                     pallet_atual_caixas += sku_sobra_qtd
                 else:
-                    # Se a sobra do SKU é maior que a capacidade de um pallet inteiro (ex: 66 de 64),
-                    # alocamos o limite máximo (64) no pallet atual e fechamos ele.
+                    # Se a sobra é maior que um pallet, enche um pallet com o máximo possível em fileiras fechadas
+                    fileiras_completas = (cap_pallet_atual // cx_por_fileira) * cx_por_fileira
+                    # Se o SKU cabe por fileiras completas até o limite
+                    alocacao_inicial = min(sku_sobra_qtd, fileiras_completas if fileiras_completas > 0 else cap_pallet_atual)
+                    
                     pallet_atual_itens.append({
                         "SKU": row["SKU"],
                         "Produto": row["Produto"],
-                        "Qtd Caixas": cap_pallet_atual,
-                        "Total Peças": cap_pallet_atual * row["Pecas_Por_Caixa"],
+                        "Qtd Caixas": alocacao_inicial,
+                        "Total Peças": alocacao_inicial * row["Pecas_Por_Caixa"],
                         "Nº Caixa": row["Nº Caixa"],
                         "Ordem_Caixa": row["Ordem_Caixa"],
-                        "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
+                        "Caixas_Por_Fileira": cx_por_fileira,
                         "Quantidade_Fileiras": row["Quantidade_Fileiras"],
                     })
-                    
-                    # Salva o pallet cheio atual
+
                     pallet_label = f"Pallet {pallet_num:02d}"
-                    tipo_s = "Misto Fechado 🟡" if len(pallet_atual_itens) > 1 else "Fechado 🟢"
                     for it in pallet_atual_itens:
                         pallets_bruto.append({
                             "Pallet_Num": pallet_num,
                             "ID": pallet_label,
-                            "Tipo": tipo_s,
+                            "Tipo": "Misto Fechado 🟡" if len(pallet_atual_itens) > 1 else "Fechado 🟢",
                             **it
                         })
                     pallet_num += 1
                     pallet_atual_caixas = 0
                     pallet_atual_itens = []
 
-                    # O excedente (ex: 2 caixas) vai para o próximo pallet
-                    excedente = sku_sobra_qtd - cap_pallet_atual
-                    pallet_atual_itens.append({
-                        "SKU": row["SKU"],
-                        "Produto": row["Produto"],
-                        "Qtd Caixas": excedente,
-                        "Total Peças": excedente * row["Pecas_Por_Caixa"],
-                        "Nº Caixa": row["Nº Caixa"],
-                        "Ordem_Caixa": row["Ordem_Caixa"],
-                        "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
-                        "Quantidade_Fileiras": row["Quantidade_Fileiras"],
-                    })
-                    pallet_atual_caixas += excedente
+                    # O excedente continua para o próximo pallet
+                    excedente = sku_sobra_qtd - alocacao_inicial
+                    if excedente > 0:
+                        pallet_atual_itens.append({
+                            "SKU": row["SKU"],
+                            "Produto": row["Produto"],
+                            "Qtd Caixas": excedente,
+                            "Total Peças": excedente * row["Pecas_Por_Caixa"],
+                            "Nº Caixa": row["Nº Caixa"],
+                            "Ordem_Caixa": row["Ordem_Caixa"],
+                            "Caixas_Por_Fileira": cx_por_fileira,
+                            "Quantidade_Fileiras": row["Quantidade_Fileiras"],
+                        })
+                        pallet_atual_caixas += excedente
             else:
-                # O pallet atual já tem itens. Vemos se a sobra caberá inteira no espaço restante
+                # O pallet já possui itens. Vemos se a sobra cabe no espaço livre
                 espaco_livre = cap_pallet_atual - pallet_atual_caixas
                 if sku_sobra_qtd <= espaco_livre:
                     pallet_atual_itens.append({
@@ -360,7 +364,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                         "Total Peças": sku_sobra_qtd * row["Pecas_Por_Caixa"],
                         "Nº Caixa": row["Nº Caixa"],
                         "Ordem_Caixa": row["Ordem_Caixa"],
-                        "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
+                        "Caixas_Por_Fileira": cx_por_fileira,
                         "Quantidade_Fileiras": row["Quantidade_Fileiras"],
                     })
                     pallet_atual_caixas += sku_sobra_qtd
@@ -377,7 +381,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                         pallet_atual_caixas = 0
                         pallet_atual_itens = []
                 else:
-                    # Não cabe inteiro no espaço livre atual; fecha o pallet atual com o que tem
+                    # Fecha o pallet atual e joga a sobra para o próximo
                     pallet_label = f"Pallet {pallet_num:02d}"
                     for it in pallet_atual_itens:
                         pallets_bruto.append({
@@ -390,57 +394,19 @@ def processar_pallets_operador(carrinho, df_produtos):
                     pallet_atual_caixas = 0
                     pallet_atual_itens = []
 
-                    # Inicia novo pallet com este SKU inteiro (se couber num pallet novo)
-                    if sku_sobra_qtd <= cap_pallet_atual:
-                        pallet_atual_itens.append({
-                            "SKU": row["SKU"],
-                            "Produto": row["Produto"],
-                            "Qtd Caixas": sku_sobra_qtd,
-                            "Total Peças": sku_sobra_qtd * row["Pecas_Por_Caixa"],
-                            "Nº Caixa": row["Nº Caixa"],
-                            "Ordem_Caixa": row["Ordem_Caixa"],
-                            "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
-                            "Quantidade_Fileiras": row["Quantidade_Fileiras"],
-                        })
-                        pallet_atual_caixas += sku_sobra_qtd
-                    else:
-                        # Excede o limite de um pallet próprio
-                        pallet_atual_itens.append({
-                            "SKU": row["SKU"],
-                            "Produto": row["Produto"],
-                            "Qtd Caixas": cap_pallet_atual,
-                            "Total Peças": cap_pallet_atual * row["Pecas_Por_Caixa"],
-                            "Nº Caixa": row["Nº Caixa"],
-                            "Ordem_Caixa": row["Ordem_Caixa"],
-                            "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
-                            "Quantidade_Fileiras": row["Quantidade_Fileiras"],
-                        })
-                        pallet_label = f"Pallet {pallet_num:02d}"
-                        for it in pallet_atual_itens:
-                            pallets_bruto.append({
-                                "Pallet_Num": pallet_num,
-                                "ID": pallet_label,
-                                "Tipo": "Fechado 🟢",
-                                **it
-                            })
-                        pallet_num += 1
-                        pallet_atual_caixas = 0
-                        pallet_atual_itens = []
+                    pallet_atual_itens.append({
+                        "SKU": row["SKU"],
+                        "Produto": row["Produto"],
+                        "Qtd Caixas": sku_sobra_qtd,
+                        "Total Peças": sku_sobra_qtd * row["Pecas_Por_Caixa"],
+                        "Nº Caixa": row["Nº Caixa"],
+                        "Ordem_Caixa": row["Ordem_Caixa"],
+                        "Caixas_Por_Fileira": cx_por_fileira,
+                        "Quantidade_Fileiras": row["Quantidade_Fileiras"],
+                    })
+                    pallet_atual_caixas += sku_sobra_qtd
 
-                        excedente = sku_sobra_qtd - cap_pallet_atual
-                        pallet_atual_itens.append({
-                            "SKU": row["SKU"],
-                            "Produto": row["Produto"],
-                            "Qtd Caixas": excedente,
-                            "Total Peças": excedente * row["Pecas_Por_Caixa"],
-                            "Nº Caixa": row["Nº Caixa"],
-                            "Ordem_Caixa": row["Ordem_Caixa"],
-                            "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
-                            "Quantidade_Fileiras": row["Quantidade_Fileiras"],
-                        })
-                        pallet_atual_caixas += excedente
-
-    # Se sobrou algo acumulado no último pallet incompleto (Fracionado final único)
+    # Passo 3: Último pallet fracionado (caso tenha restado itens incompletos)
     if pallet_atual_itens:
         pallet_label = f"Pallet {pallet_num:02d}"
         for it in pallet_atual_itens:
