@@ -219,13 +219,13 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO (GARANTE APENAS O ÚLTIMO FRACIONADO) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO (SEM FRACIONAMENTOS INTERMEDIÁRIOS, APENAS O ÚLTIMO FRACIONADO) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
-    sobras_por_tipo_caixa = {}
+    sobras_totais = []
 
-    # Passo 1: Separar Pallets 100% Fechados por SKU
+    # Passo 1: Gerar pallets 100% fechados por item do carrinho e acumular os restos estritamente para o fim
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -240,7 +240,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd_pallets_fechados = qtd_total_caixas // cap_max_caixas
         resto = qtd_total_caixas % cap_max_caixas
 
-        # Adiciona pallets completos
+        # Adiciona pallets completos estritamente fechados
         for _ in range(qtd_pallets_fechados):
             pallets_bruto.append({
                 "Pallet_Num": pallet_num,
@@ -255,87 +255,32 @@ def processar_pallets_operador(carrinho, df_produtos):
             })
             pallet_num += 1
 
-        # Acumula sobras para unificação
+        # Guarda a sobra (se houver) para o pallet final único
         if resto > 0:
-            if num_caixa not in sobras_por_tipo_caixa:
-                sobras_por_tipo_caixa[num_caixa] = []
-
-            sobras_por_tipo_caixa[num_caixa].append({
+            sobras_totais.append({
                 "SKU": sku,
                 "Produto": prod["NOME DO PRODUTO"],
                 "Qtd Caixas": resto,
                 "Pecas_Por_Caixa": pecas_por_caixa,
                 "Nº Caixa": num_caixa,
                 "Ordem_Caixa": ordem_cx,
-                "Capacidade_Max_Caixas": cap_max_caixas,
             })
 
-    # Passo 2: Consolidação Estrita das Sobras (Apenas o ÚLTIMO pallet pode ser fracionado)
-    for num_caixa, lista_sobras in sobras_por_tipo_caixa.items():
-        caixas_no_pallet = 0
-        itens_no_pallet = []
-        cap_alvo = lista_sobras[0]["Capacidade_Max_Caixas"]
-
-        for row in lista_sobras:
-            qtd_restante = row["Qtd Caixas"]
-            pecas_cx = row["Pecas_Por_Caixa"]
-
-            while qtd_restante > 0:
-                espaco_livre = cap_alvo - caixas_no_pallet
-
-                # Se encheu o pallet atual, consolida obrigatoriamente como FECHADO
-                if espaco_livre == 0:
-                    pallet_label = f"Pallet {pallet_num:02d}"
-                    qtd_skus = len({it["SKU"] for it in itens_no_pallet})
-                    tipo_str = "Misto Fechado 🟡" if qtd_skus > 1 else "Fechado 🟢"
-
-                    for it in itens_no_pallet:
-                        it["Pallet_Num"] = pallet_num
-                        it["ID"] = pallet_label
-                        it["Tipo"] = tipo_str
-                        pallets_bruto.append(it)
-
-                    pallet_num += 1
-                    caixas_no_pallet = 0
-                    itens_no_pallet = []
-                    cap_alvo = row["Capacidade_Max_Caixas"]
-                    espaco_livre = cap_alvo
-
-                qtd_alocar = min(qtd_restante, espaco_livre)
-
-                itens_no_pallet.append({
-                    "Pallet_Num": pallet_num,
-                    "ID": "",
-                    "Tipo": "",
-                    "SKU": row["SKU"],
-                    "Produto": row["Produto"],
-                    "Qtd Caixas": qtd_alocar,
-                    "Total Peças": qtd_alocar * pecas_cx,
-                    "Nº Caixa": row["Nº Caixa"],
-                    "Ordem_Caixa": row["Ordem_Caixa"],
-                })
-
-                caixas_no_pallet += qtd_alocar
-                qtd_restante -= qtd_alocar
-
-        # Ao terminar o loop do tipo de caixa: se sobrou algo e não preencheu 100%, ESTE É O ÚNICO FRACIONADO
-        if itens_no_pallet:
-            pallet_label = f"Pallet {pallet_num:02d}"
-            qtd_skus = len({it["SKU"] for it in itens_no_pallet})
-            is_full = caixas_no_pallet == cap_alvo
-
-            if is_full:
-                tipo_str = "Misto Fechado 🟡" if qtd_skus > 1 else "Fechado 🟢"
-            else:
-                tipo_str = "Pallet Final (Fracionado) 🟠"
-
-            for it in itens_no_pallet:
-                it["Pallet_Num"] = pallet_num
-                it["ID"] = pallet_label
-                it["Tipo"] = tipo_str
-                pallets_bruto.append(it)
-
-            pallet_num += 1
+    # Passo 2: Se restou alguma fração no pedido inteiro, cria APENAS UM ÚLTIMO PALLET FRACIONADO contendo todas as sobras juntas
+    if sobras_totais:
+        for row in sobras_totais:
+            pallets_bruto.append({
+                "Pallet_Num": pallet_num,
+                "ID": f"Pallet {pallet_num:02d}",
+                "Tipo": "Pallet Final (Fracionado) 🟠",
+                "SKU": row["SKU"],
+                "Produto": row["Produto"],
+                "Qtd Caixas": row["Qtd Caixas"],
+                "Total Peças": row["Qtd Caixas"] * row["Pecas_Por_Caixa"],
+                "Nº Caixa": row["Nº Caixa"],
+                "Ordem_Caixa": row["Ordem_Caixa"],
+            })
+        pallet_num += 1
 
     df_temp = pd.DataFrame(pallets_bruto)
     if df_temp.empty:
