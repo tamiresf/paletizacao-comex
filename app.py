@@ -229,7 +229,7 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO INTELIGENTE ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO CORRIGIDO (MANTÉM O SKU UNIDO NAS SOBRAS) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
@@ -251,7 +251,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd_pallets_fechados = qtd_total_caixas // cap_max_caixas
         resto = qtd_total_caixas % cap_max_caixas
 
-        # Adiciona pallets completos fechados individuais do SKU
         for _ in range(qtd_pallets_fechados):
             pallets_bruto.append({
                 "Pallet_Num": pallet_num,
@@ -268,11 +267,11 @@ def processar_pallets_operador(carrinho, df_produtos):
             })
             pallet_num += 1
 
-        # Mantém o bloco de sobra do SKU unido e o direciona para a numeração de caixa correspondente
         if resto > 0:
             if num_caixa not in sobras_por_tipo_caixa:
                 sobras_por_tipo_caixa[num_caixa] = []
 
+            # Mantém a sobra do SKU como um bloco inteiro único
             sobras_por_tipo_caixa[num_caixa].append({
                 "SKU": sku,
                 "Produto": prod["NOME DO PRODUTO"],
@@ -290,12 +289,35 @@ def processar_pallets_operador(carrinho, df_produtos):
     for num_cx, lista_sobras in sobras_por_tipo_caixa.items():
         caixas_no_pallet_atual = 0
         itens_no_pallet_atual = []
-        cap_alvo = lista_sobras[0]["Capacidade_Max_Caixas"]
+        cap_alvo = (
+            lista_sobras[0]["Capacidade_Max_Caixas"] if lista_sobras else 64
+        )
 
         for row in lista_sobras:
-            qtd_restante = row["Qtd Caixas"]
+            qtd_sku_restante = row["Qtd Caixas"]
 
-            while qtd_restante > 0:
+            # Se o bloco inteiro de sobra do SKU cabe no espaço livre do pallet atual, aloca inteiro sem quebrar!
+            espaco_livre = cap_alvo - caixas_no_pallet_atual
+            if (
+                caixas_no_pallet_atual > 0
+                and qtd_sku_restante <= espaco_livre
+                and espaco_livre < cap_alvo
+            ):
+                itens_no_pallet_atual.append({
+                    "SKU": row["SKU"],
+                    "Produto": row["Produto"],
+                    "Qtd Caixas": qtd_sku_restante,
+                    "Total Peças": qtd_sku_restante * row["Pecas_Por_Caixa"],
+                    "Nº Caixa": row["Nº Caixa"],
+                    "Ordem_Caixa": row["Ordem_Caixa"],
+                    "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
+                    "Quantidade_Fileiras": row["Quantidade_Fileiras"],
+                })
+                caixas_no_pallet_atual += qtd_sku_restante
+                continue
+
+            # Caso contrário, gerencia preenchendo o pallet atual ou abrindo novos mistos
+            while qtd_sku_restante > 0:
                 espaco_livre = cap_alvo - caixas_no_pallet_atual
 
                 if espaco_livre == 0:
@@ -319,7 +341,14 @@ def processar_pallets_operador(carrinho, df_produtos):
                     itens_no_pallet_atual = []
                     espaco_livre = cap_alvo
 
-                qtd_alocar = min(qtd_restante, espaco_livre)
+                # Tenta alocar o SKU inteiro se ele couber no espaço livre restante do pallet
+                if (
+                    qtd_sku_restante <= espaco_livre
+                    and caixas_no_pallet_atual == 0
+                ):
+                    qtd_alocar = qtd_sku_restante
+                else:
+                    qtd_alocar = min(qtd_sku_restante, espaco_livre)
 
                 itens_no_pallet_atual.append({
                     "SKU": row["SKU"],
@@ -333,7 +362,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 })
 
                 caixas_no_pallet_atual += qtd_alocar
-                qtd_restante -= qtd_alocar
+                qtd_sku_restante -= qtd_alocar
 
         if itens_no_pallet_atual:
             if caixas_no_pallet_atual == cap_alvo:
@@ -548,8 +577,7 @@ if st.session_state.processado and st.session_state.carrinho:
                 ]],
                 use_container_width=True,
             )
-            
-            # Exibe o total de caixas destacado logo abaixo da tabela, alinhado à direita
+
             st.markdown(
                 f"""
                 <div style="text-align: right;">
