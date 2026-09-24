@@ -229,7 +229,7 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO INTELIGENTE ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
@@ -251,6 +251,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         qtd_pallets_fechados = qtd_total_caixas // cap_max_caixas
         resto = qtd_total_caixas % cap_max_caixas
 
+        # Adiciona pallets completos fechados individuais do SKU
         for _ in range(qtd_pallets_fechados):
             pallets_bruto.append({
                 "Pallet_Num": pallet_num,
@@ -267,6 +268,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             })
             pallet_num += 1
 
+        # Mantém o bloco de sobra do SKU unido e o direciona para a numeração de caixa correspondente
         if resto > 0:
             if num_caixa not in sobras_por_tipo_caixa:
                 sobras_por_tipo_caixa[num_caixa] = []
@@ -551,7 +553,7 @@ if st.session_state.processado and st.session_state.carrinho:
             st.markdown(
                 f"""
                 <div style="text-align: right;">
-                    <span class="total-caixas-destaque">📦 Total de Caixas no Pallet: {total_cx} cx</span>
+                    <span class="total-caixas-destaque">📦 Total de Caixas do Pallet: {total_cx} cx</span>
                 </div>
                 """,
                 unsafe_allow_html=True,
