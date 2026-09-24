@@ -28,6 +28,16 @@ st.markdown(
         border-radius: 6px;
         margin-bottom: 20px;
     }
+    .total-caixas-destaque {
+        color: #0055B8;
+        font-weight: bold;
+        font-size: 1.1em;
+        background-color: #F0F4F8;
+        padding: 6px 12px;
+        border-radius: 4px;
+        display: inline-block;
+        margin-top: 5px;
+    }
     </style>
 """,
     unsafe_allow_html=True,
@@ -535,4 +545,14 @@ if st.session_state.processado and st.session_state.carrinho:
                     "Quantidade_Fileiras",
                 ]],
                 use_container_width=True,
+            )
+            
+            # Exibe o total de caixas destacado logo abaixo da tabela, alinhado à direita
+            st.markdown(
+                f"""
+                <div style="text-align: right;">
+                    <span class="total-caixas-destaque">📦 Total de Caixas do Pallet: {total_cx} cx</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
