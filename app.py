@@ -219,13 +219,13 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO (SEM FRACIONAMENTOS INTERMEDIÁRIOS, APENAS O ÚLTIMO FRACIONADO) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO INTELIGENTE (SEM FRACIONAMENTOS INTERMEDIÁRIOS) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
-    sobras_totais = []
+    sobras_por_num_caixa = {}
 
-    # Passo 1: Gerar pallets 100% fechados por item do carrinho e acumular os restos estritamente para o fim
+    # Passo 1: Separar Pallets 100% Fechados por SKU
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -236,11 +236,13 @@ def processar_pallets_operador(carrinho, df_produtos):
         ordem_cx = int(prod.get("Ordem_Caixa", 0))
         num_caixa = str(prod["NUMERO DA CAIXA"]).strip()
         pecas_por_caixa = int(prod["QUANTIDADE DE PEÇAS"])
+        caixas_por_fileira = int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
+        quantidade_fileiras = int(prod["ALTURA"])
 
         qtd_pallets_fechados = qtd_total_caixas // cap_max_caixas
         resto = qtd_total_caixas % cap_max_caixas
 
-        # Adiciona pallets completos estritamente fechados
+        # Adiciona pallets completos fechados
         for _ in range(qtd_pallets_fechados):
             pallets_bruto.append({
                 "Pallet_Num": pallet_num,
@@ -252,48 +254,76 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Total Peças": cap_max_caixas * pecas_por_caixa,
                 "Nº Caixa": num_caixa,
                 "Ordem_Caixa": ordem_cx,
+                "Caixas_Por_Fileira": caixas_por_fileira,
+                "Quantidade_Fileiras": quantidade_fileiras,
             })
             pallet_num += 1
 
-        # Guarda a sobra (se houver) para o pallet final único
+        # Agrupa as sobras por numeração da caixa para o pallet final único
         if resto > 0:
-            sobras_totais.append({
+            if num_caixa not in sobras_por_num_caixa:
+                sobras_por_num_caixa[num_caixa] = []
+
+            sobras_por_num_caixa[num_caixa].append({
                 "SKU": sku,
                 "Produto": prod["NOME DO PRODUTO"],
                 "Qtd Caixas": resto,
                 "Pecas_Por_Caixa": pecas_por_caixa,
                 "Nº Caixa": num_caixa,
                 "Ordem_Caixa": ordem_cx,
+                "Caixas_Por_Fileira": caixas_por_fileira,
+                "Quantidade_Fileiras": quantidade_fileiras,
             })
 
-    # Passo 2: Se restou alguma fração no pedido inteiro, cria APENAS UM ÚLTIMO PALLET FRACIONADO contendo todas as sobras juntas
-    if sobras_totais:
-        for row in sobras_totais:
-            pallets_bruto.append({
-                "Pallet_Num": pallet_num,
-                "ID": f"Pallet {pallet_num:02d}",
-                "Tipo": "Pallet Final (Fracionado) 🟠",
-                "SKU": row["SKU"],
-                "Produto": row["Produto"],
-                "Qtd Caixas": row["Qtd Caixas"],
-                "Total Peças": row["Qtd Caixas"] * row["Pecas_Por_Caixa"],
-                "Nº Caixa": row["Nº Caixa"],
-                "Ordem_Caixa": row["Ordem_Caixa"],
-            })
+    # Passo 2: Gerar APENAS UM ÚLTIMO PALLET FRACIONADO ordenando as caixas maiores embaixo
+    if sobras_por_num_caixa:
+        # Ordena as sobras priorizando a numeração da caixa (maiores embaixo, conforme Ordem_Caixa decrescente)
+        chaves_ordenadas = sorted(
+            sobras_por_num_caixa.keys(),
+            key=lambda x: int(re.sub(r"\D", "", x) or 0),
+            reverse=True,
+        )
+
+        for num_cx in chaves_ordenadas:
+            for row in sobras_por_num_caixa[num_cx]:
+                pallets_bruto.append({
+                    "Pallet_Num": pallet_num,
+                    "ID": f"Pallet {pallet_num:02d}",
+                    "Tipo": "Pallet Final (Fracionado) 🟠",
+                    "SKU": row["SKU"],
+                    "Produto": row["Produto"],
+                    "Qtd Caixas": row["Qtd Caixas"],
+                    "Total Peças": row["Qtd Caixas"] * row["Pecas_Por_Caixa"],
+                    "Nº Caixa": row["Nº Caixa"],
+                    "Ordem_Caixa": row["Ordem_Caixa"],
+                    "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
+                    "Quantidade_Fileiras": row["Quantidade_Fileiras"],
+                })
         pallet_num += 1
 
     df_temp = pd.DataFrame(pallets_bruto)
     if df_temp.empty:
         return df_temp
 
-    # Passo 3: Agrupamento final mantendo ordem numérica do pallet
+    # Passo 3: Agrupamento final mantendo a ordenação por numeração de caixa (maior em baixo) dentro do pallet
     df_consolidado = (
-        df_temp.groupby(
-            ["Pallet_Num", "ID", "Tipo", "SKU", "Produto", "Nº Caixa"],
+        df_temp.sort_values(
+            by=["Pallet_Num", "Ordem_Caixa"], ascending=[True, False]
+        )
+        .groupby(
+            [
+                "Pallet_Num",
+                "ID",
+                "Tipo",
+                "SKU",
+                "Produto",
+                "Nº Caixa",
+                "Caixas_Por_Fileira",
+                "Quantidade_Fileiras",
+            ],
             as_index=False,
         )
-        .agg({"Qtd Caixas": "sum", "Total Peças": "sum"})
-        .sort_values(by="Pallet_Num")
+        .agg({"Qtd Caixas": "sum", "Total Peças": "sum", "Ordem_Caixa": "first"})
     )
 
     return df_consolidado
@@ -338,26 +368,30 @@ def gerar_pdf(df_pallets, cliente, data_str):
         )
         pdf.ln(10)
 
-        pdf.set_font("Helvetica", "B", 9)
-        pdf.cell(30, 6, "SKU", border=1)
-        pdf.cell(85, 6, "Produto", border=1)
-        pdf.cell(20, 6, "N. Caixa", border=1)
-        pdf.cell(25, 6, "Qtd Caixas", border=1)
-        pdf.cell(25, 6, "Qtd Peças", border=1)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(25, 6, "SKU", border=1)
+        pdf.cell(65, 6, "Produto", border=1)
+        pdf.cell(18, 6, "N. Caixa", border=1)
+        pdf.cell(20, 6, "Qtd Caixas", border=1)
+        pdf.cell(22, 6, "Qtd Peças", border=1)
+        pdf.cell(20, 6, "Cx/Fileira", border=1)
+        pdf.cell(20, 6, "Fileiras", border=1)
         pdf.ln()
 
-        pdf.set_font("Helvetica", size=9)
+        pdf.set_font("Helvetica", size=8)
         for _, row in df_p.iterrows():
             prod_nome = (
                 str(row["Produto"])
                 .encode("latin-1", "replace")
-                .decode("latin-1")[:38]
+                .decode("latin-1")[:32]
             )
-            pdf.cell(30, 6, str(row["SKU"]), border=1)
-            pdf.cell(85, 6, prod_nome, border=1)
-            pdf.cell(20, 6, str(row["Nº Caixa"]), border=1)
-            pdf.cell(25, 6, str(row["Qtd Caixas"]), border=1)
-            pdf.cell(25, 6, str(row["Total Peças"]), border=1)
+            pdf.cell(25, 6, str(row["SKU"]), border=1)
+            pdf.cell(65, 6, prod_nome, border=1)
+            pdf.cell(18, 6, str(row["Nº Caixa"]), border=1)
+            pdf.cell(20, 6, str(row["Qtd Caixas"]), border=1)
+            pdf.cell(22, 6, str(row["Total Peças"]), border=1)
+            pdf.cell(20, 6, str(row["Caixas_Por_Fileira"]), border=1)
+            pdf.cell(20, 6, str(row["Quantidade_Fileiras"]), border=1)
             pdf.ln()
 
         pdf.ln(6)
@@ -426,8 +460,18 @@ if st.session_state.processado and st.session_state.carrinho:
             f"📌 {p_id} - Total: {total_cx} caixas / {total_pc} peças ({tipo_pallet})",
             expanded=True,
         ):
-            st.markdown("**Composição detalhada:**")
+            st.markdown(
+                "**Composição detalhada (organizada da base para o topo - caixas maiores embaixo):**"
+            )
             st.dataframe(
-                df_p[["SKU", "Produto", "Nº Caixa", "Qtd Caixas", "Total Peças"]],
+                df_p[[
+                    "SKU",
+                    "Produto",
+                    "Nº Caixa",
+                    "Qtd Caixas",
+                    "Total Peças",
+                    "Caixas_Por_Fileira",
+                    "Quantidade_Fileiras",
+                ]],
                 use_container_width=True,
             )
