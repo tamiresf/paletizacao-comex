@@ -229,15 +229,14 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO ATENDENDO ÀS REGRAS DO USUÁRIO ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO REVISADO (UNIFICAÇÃO RIGOROSA POR TIPO DE CAIXA E FILEIRAS) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
     
-    # Lista para acumular caixas que sobraram de SKU que não fecharam pallet
-    sobras_por_caixa = {}
+    sobras_por_tipo_caixa = {}
 
-    # Passo 1: Aloca pallets 100% fechados por SKU individual
+    # Passo 1: Aloca os pallets 100% fechados de cada SKU individualmente
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -270,10 +269,10 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallet_num += 1
 
         if resto > 0:
-            if num_caixa not in sobras_por_caixa:
-                sobras_por_caixa[num_caixa] = []
+            if num_caixa not in sobras_por_tipo_caixa:
+                sobras_por_tipo_caixa[num_caixa] = []
 
-            sobras_por_caixa[num_caixa].append({
+            sobras_por_tipo_caixa[num_caixa].append({
                 "SKU": sku,
                 "Produto": prod["NOME DO PRODUTO"],
                 "Qtd Caixas": resto,
@@ -285,19 +284,20 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Capacidade_Max_Caixas": cap_max_caixas,
             })
 
-    # Passo 2: Processar as sobras agrupando por numeração de caixa, priorizando completar fileiras
+    # Passo 2: Processamento estrito das sobras agrupadas por tipo/numeração de caixa
     tipos_caixas_ordenados = sorted(
-        sobras_por_caixa.keys(),
+        sobras_por_tipo_caixa.keys(),
         key=lambda x: int(re.sub(r"\D", "", x) or 0),
         reverse=True
     )
 
     pallet_atual_itens = []
     caixas_no_pallet_atual = 0
-    cap_alvo_atual = 64
+    cap_alvo_atual = 100  # Valor padrão de segurança
 
     for num_cx in tipos_caixas_ordenados:
-        lista_sobras = sobras_por_caixa[num_cx]
+        lista_sobras = sobras_por_tipo_caixa[num_cx]
+        
         for row in lista_sobras:
             cap_alvo_atual = row["Capacidade_Max_Caixas"]
             qtd_restante = row["Qtd Caixas"]
@@ -306,7 +306,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 espaco_livre = cap_alvo_atual - caixas_no_pallet_atual
 
                 if espaco_livre == 0:
-                    # Fecha o pallet atual que completou a capacidade
+                    # Fecha o pallet atual que completou a capacidade exata
                     pallet_label = f"Pallet {pallet_num:02d}"
                     tipo_p = "Misto Fechado 🟡" if len(pallet_atual_itens) > 1 else "Fechado 🟢"
                     for it in pallet_atual_itens:
@@ -323,7 +323,7 @@ def processar_pallets_operador(carrinho, df_produtos):
 
                 qtd_alocar = min(qtd_restante, espaco_livre)
 
-                # Agrupa se já houver o SKU no pallet em construção
+                # Verifica se o SKU já existe no pallet em construção para acumular
                 encontrado = False
                 for it in pallet_atual_itens:
                     if it["SKU"] == row["SKU"]:
@@ -347,7 +347,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 caixas_no_pallet_atual += qtd_alocar
                 qtd_restante -= qtd_alocar
 
-    # Passo 3: Último pallet fracionado com as caixas restantes que não fecharam a capacidade máxima
+    # Passo 3: Pallet fracionado final apenas para resíduos absolutos restantes
     if pallet_atual_itens:
         pallet_label = f"Pallet {pallet_num:02d}"
         for it in pallet_atual_itens:
