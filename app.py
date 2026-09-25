@@ -229,7 +229,7 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO DE EXPORTAÇÃO ---
+# --- 6. ALGORITMO COM TRAVA ESTRITA DE CAPACIDADE MÁXIMA POR PALLET ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
@@ -293,22 +293,12 @@ def processar_pallets_operador(carrinho, df_produtos):
         cap_alvo = caixas_individuais[0]["Capacidade_Max"]
         pallets_deste_bloco = []
 
-        while len(caixas_individuais) >= cap_alvo:
-            lote_cheio = caixas_individuais[:cap_alvo]
-            caixas_individuais = caixas_individuais[cap_alvo:]
-            pallets_deste_bloco.append(lote_cheio)
-
-        if caixas_individuais:
-            if pallets_deste_bloco:
-                ultimo_pallet = pallets_deste_bloco[-1]
-                espaco_livre = cap_alvo - len(ultimo_pallet)
-                
-                if len(caixas_individuais) <= espaco_livre + (cap_alvo * 0.3):
-                    ultimo_pallet.extend(caixas_individuais)
-                    caixas_individuais = []
-            
-            if caixas_individuais:
-                pallets_deste_bloco.append(caixas_individuais)
+        # TRAVA DE SEGURANÇA: Garante estritamente que nenhum lote ultrapasse a capacidade máxima cadastrada
+        while len(caixas_individuais) > 0:
+            tamanho_lote = min(len(caixas_individuais), cap_alvo)
+            lote = caixas_individuais[:tamanho_lote]
+            caixas_individuais = caixas_individuais[tamanho_lote:]
+            pallets_deste_bloco.append(lote)
 
         for lote in pallets_deste_bloco:
             sku_counts = {}
@@ -330,7 +320,7 @@ def processar_pallets_operador(carrinho, df_produtos):
 
             total_cx_lote = sum(i["Qtd Caixas"] for i in sku_counts.values())
             
-            if total_cx_lote >= cap_alvo or (len(pallets_deste_bloco) == 1 and total_cx_lote >= (cap_alvo * 0.5)):
+            if total_cx_lote == cap_alvo:
                 tipo_p = "Misto Fechado 🟡" if len(sku_counts) > 1 else "Fechado 🟢"
             else:
                 tipo_p = "Pallet Final (Fracionado) 🟠"
@@ -349,7 +339,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     if df_temp.empty:
         return df_temp
 
-    # --- NOVO: REORGANIZAÇÃO VISUAL POR ORDEM DE TIPO DE PALLET ---
+    # --- REORGANIZAÇÃO VISUAL POR ORDEM DE TIPO DE PALLET ---
     # Prioridade: 1º Fechados (🟢), 2º Misto Fechados (🟡), 3º Fracionados (🟠)
     def prioridade_tipo(tipo):
         if "Fechado 🟢" in tipo:
@@ -361,7 +351,6 @@ def processar_pallets_operador(carrinho, df_produtos):
 
     df_temp["Prioridade"] = df_temp["Tipo"].apply(prioridade_tipo)
     
-    # Mapeia os IDs antigos para uma nova numeração sequencial baseada na prioridade visual
     pallets_ordenados_ids = (
         df_temp.sort_values(by=["Prioridade", "Pallet_Num", "Ordem_Caixa"], ascending=[True, True, False])
         [["Pallet_Num", "ID"]]
