@@ -229,12 +229,10 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO OTIMIZADO (PREENCHIMENTO MÁXIMO POR TIPO DE CAIXA) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO COM ABSORÇÃO DE SOBRAS (EVITA PALLETS VAZIOS) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
-    
-    # Lista global para acumular todas as caixas individuais de todos os SKUs do pedido
     todas_as_caixas = []
 
     for item in carrinho:
@@ -249,7 +247,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         caixas_por_fileira = int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
         quantidade_fileiras = int(prod["ALTURA"])
 
-        # Adiciona cada caixa individualmente à lista geral para facilitar o agrupamento inteligente
         for _ in range(qtd_total_caixas):
             todas_as_caixas.append({
                 "SKU": sku,
@@ -265,7 +262,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     if not todas_as_caixas:
         return pd.DataFrame()
 
-    # Separa em blocos por Numeração de Caixa (ex: Caixa 2.0, Caixa 0, etc.)
+    # Organiza em lotes por numeração de caixa
     caixas_por_tipo = {}
     for cx in todas_as_caixas:
         num_cx = cx["Nº Caixa"]
@@ -273,27 +270,24 @@ def processar_pallets_operador(carrinho, df_produtos):
             caixas_por_tipo[num_cx] = []
         caixas_por_tipo[num_cx].append(cx)
 
-    # Ordena os tipos de caixa (priorizando as maiores caixas embaixo no geral se houver mistura, ou por ordem de caixa)
     tipos_ordenados = sorted(
         caixas_por_tipo.keys(),
         key=lambda x: int(re.sub(r"\D", "", x) or 0),
         reverse=True
     )
 
-    # Fila de itens acumulados que não formaram pallets cheios
-    residuos_globais = []
+    # Lista para acumular todos os pallets formados
+    pallets_em_construcao = []
 
     for num_cx in tipos_ordenados:
         lista_cx = caixas_por_tipo[num_cx]
-        # Pega a capacidade padrão de pallet para este tipo de caixa
         cap_pallet = lista_cx[0]["Capacidade_Max_Caixas"] if lista_cx else 64
 
-        # Enquanto houver caixas deste tipo, formamos pallets cheios (capacidade máxima)
+        # 1. Cria pallets inteiros (cheios)
         while len(lista_cx) >= cap_pallet:
             lote_cheio = lista_cx[:cap_pallet]
             lista_cx = lista_cx[cap_pallet:]
-
-            # Agrupa os SKUs dentro deste lote cheio
+            
             sku_counts = {}
             for item in lote_cheio:
                 s = item["SKU"]
@@ -311,54 +305,91 @@ def processar_pallets_operador(carrinho, df_produtos):
                 sku_counts[s]["Qtd Caixas"] += 1
                 sku_counts[s]["Total Peças"] += item["Pecas_Por_Caixa"]
 
-            tipo_p = "Fechado 🟢" if len(sku_counts) == 1 else "Misto Fechado 🟡"
-            pallet_label = f"Pallet {pallet_num:02d}"
+            pallets_em_construcao.append({
+                "itens": list(sku_counts.values()),
+                "num_caixa": num_cx,
+                "capacidade": cap_pallet,
+                "fechado": True
+            })
 
-            for s_info in sku_counts.values():
-                pallets_bruto.append({
-                    "Pallet_Num": pallet_num,
-                    "ID": pallet_label,
-                    "Tipo": tipo_p,
-                    **s_info
-                })
-            pallet_num += 1
-
-        # Se sobrou menos do que a capacidade do pallet para este tipo de caixa, jogamos para os resíduos
+        # 2. O que sobrou deste tipo de caixa, guarda temporariamente
         if lista_cx:
-            residuos_globais.extend(lista_cx)
+            sku_counts = {}
+            for item in lista_cx:
+                s = item["SKU"]
+                if s not in sku_counts:
+                    sku_counts[s] = {
+                        "SKU": s,
+                        "Produto": item["Produto"],
+                        "Nº Caixa": item["Nº Caixa"],
+                        "Ordem_Caixa": item["Ordem_Caixa"],
+                        "Qtd Caixas": 0,
+                        "Total Peças": 0,
+                        "Caixas_Por_Fileira": item["Caixas_Por_Fileira"],
+                        "Quantidade_Fileiras": item["Quantidade_Fileiras"],
+                    }
+                sku_counts[s]["Qtd Caixas"] += 1
+                sku_counts[s]["Total Peças"] += item["Pecas_Por_Caixa"]
 
-    # Agora processa os resíduos globais: tenta juntar diferentes tipos de caixa se couberem no último pallet, ou gera pallets mistos de sobra
-    while len(residuos_globais) > 0:
-        # Pega a capacidade do primeiro item como alvo para o pallet residual
-        cap_alvo = residuos_globais[0]["Capacidade_Max_Caixas"]
-        lote_atual = residuos_globais[:cap_alvo]
-        residuos_globais = residuos_globais[cap_alvo:]
+            pallets_em_construcao.append({
+                "itens": list(sku_counts.values()),
+                "num_caixa": num_cx,
+                "capacidade": cap_pallet,
+                "fechado": False
+            })
 
-        sku_counts = {}
-        for item in lote_atual:
-            s = item["SKU"]
-            if s not in sku_counts:
-                sku_counts[s] = {
-                    "SKU": s,
-                    "Produto": item["Produto"],
-                    "Nº Caixa": item["Nº Caixa"],
-                    "Ordem_Caixa": item["Ordem_Caixa"],
-                    "Qtd Caixas": 0,
-                    "Total Peças": 0,
-                    "Caixas_Por_Fileira": item["Caixas_Por_Fileira"],
-                    "Quantidade_Fileiras": item["Quantidade_Fileiras"],
-                }
-            sku_counts[s]["Qtd Caixas"] += 1
-            sku_counts[s]["Total Peças"] += item["Pecas_Por_Caixa"]
+    # TENTATIVA DE COMPACTAÇÃO: Encaixar sobras em pallets abertos do mesmo tamanho de caixa
+    # Procura pallets não fechados e tenta passá-los para outros pallets que tenham espaço livre do mesmo tipo
+    pallets_abertos = [p for p in pallets_em_construcao if not p["fechado"]]
+    pallets_fechados = [p for p in pallets_em_construcao if p["fechado"]]
 
-        is_full = (sum(i["Qtd Caixas"] for i in sku_counts.values()) == cap_alvo)
-        if is_full:
-            tipo_p = "Misto Fechado 🟡" if len(sku_counts) > 1 else "Fechado 🟢"
+    # Se houver mais de um pallet aberto, tenta fundir os do mesmo tamanho de caixa
+    if len(pallets_abertos) > 1:
+        # Ordena abertos por tamanho de caixa para juntar os iguais
+        pallets_abertos.sort(key=lambda x: x["num_caixa"])
+        
+        i = 0
+        while i < len(pallets_abertos) - 1:
+            p1 = pallets_abertos[i]
+            p2 = pallets_abertos[i+1]
+            
+            # Se forem da mesma numeração de caixa, tenta fundir
+            if p1["num_caixa"] == p2["num_caixa"]:
+                total_cx_p1 = sum(item["Qtd Caixas"] for item in p1["itens"])
+                total_cx_p2 = sum(item["Qtd Caixas"] for item in p2["itens"])
+                
+                # Se a soma couber na capacidade máxima do pallet, junta ambos em p1 e elimina p2
+                if total_cx_p1 + total_cx_p2 <= p1["capacidade"]:
+                    for item_p2 in p2["itens"]:
+                        encontrado = False
+                        for item_p1 in p1["itens"]:
+                            if item_p1["SKU"] == item_p2["SKU"]:
+                                item_p1["Qtd Caixas"] += item_p2["Qtd Caixas"]
+                                item_p1["Total Peças"] += item_p2["Total Peças"]
+                                encontrado = True
+                                break
+                        if not encontrado:
+                            p1["itens"].append(item_p2)
+                    
+                    if total_cx_p1 + total_cx_p2 == p1["capacidade"]:
+                        p1["fechado"] = True
+                    
+                    pallets_abertos.pop(i+1)
+                    continue
+            i += 1
+
+    # Reconstri a lista final ordenada de pallets
+    pallets_finais_ordenados = pallets_fechados + pallets_abertos
+
+    for p in pallets_finais_ordenados:
+        total_n_cx = sum(item["Qtd Caixas"] for item in p["itens"])
+        if total_n_cx == p["capacidade"]:
+            tipo_p = "Misto Fechado 🟡" if len(p["itens"]) > 1 else "Fechado 🟢"
         else:
             tipo_p = "Pallet Final (Fracionado) 🟠"
 
         pallet_label = f"Pallet {pallet_num:02d}"
-        for s_info in sku_counts.values():
+        for s_info in p["itens"]:
             pallets_bruto.append({
                 "Pallet_Num": pallet_num,
                 "ID": pallet_label,
