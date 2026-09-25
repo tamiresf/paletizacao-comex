@@ -229,7 +229,7 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO INTELIGENTE COM REDISTRIBUIÇÃO DE FILEIRAS (MÁXIMA OTIMIZAÇÃO) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO DE EXPORTAÇÃO (MÁXIMA OTIMIZAÇÃO POR BLOCO DE CAIXA) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
@@ -291,34 +291,29 @@ def processar_pallets_operador(carrinho, df_produtos):
             continue
 
         cap_alvo = caixas_individuais[0]["Capacidade_Max"]
-        cx_por_fileira = caixas_individuais[0]["Caixas_Por_Fileira"]
         pallets_deste_bloco = []
 
-        # 1. Extração de blocos cheios perfeitos
+        # Separa em lotes exatos da capacidade máxima do pallet para este tipo de caixa
         while len(caixas_individuais) >= cap_alvo:
             lote_cheio = caixas_individuais[:cap_alvo]
             caixas_individuais = caixas_individuais[cap_alvo:]
             pallets_deste_bloco.append(lote_cheio)
 
-        # 2. Se sobrou resto, aplicamos a lógica inteligente de combinação/redistribuição por fileiras
+        # Se houver sobra final menor que a capacidade, aplicamos o algoritmo de absorção inteligente
         if caixas_individuais:
             if pallets_deste_bloco:
-                # Tenta puxar do último pallet cheio caixas suficientes para completar fileiras exatas no resto,
-                # ou fundir o resto no penúltimo/último pallet para evitar um pallet extra fracionado isolado.
-                ultimo_cheio = pallets_deste_bloco[-1]
-                espaco_livre_ultimo = cap_alvo - len(ultimo_cheio)
+                # Tenta absorver as caixas restantes distribuindo no último pallet aberto do mesmo bloco
+                ultimo_pallet = pallets_deste_bloco[-1]
+                espaco_livre = cap_alvo - len(ultimo_pallet)
                 
-                if len(caixas_individuais) <= espaco_livre_ultimo:
-                    # O resto cabe perfeitamente no último pallet existente do bloco
-                    ultimo_cheio.extend(caixas_individuais)
+                if len(caixas_individuais) <= espaco_livre + (cap_alvo * 0.3): # Flexibilidade controlada de otimização
+                    ultimo_pallet.extend(caixas_individuais)
                     caixas_individuais = []
-                else:
-                    # Se o resto é grande, criamos um pallet próprio para ele e testamos se dá para otimizar fileiras quebradas
-                    pallets_deste_bloco.append(caixas_individuais)
-            else:
+            
+            if caixas_individuais:
                 pallets_deste_bloco.append(caixas_individuais)
 
-        # Constrói os registros finais para os pallets deste bloco de numeração de caixa
+        # Constrói os pallets do bloco atual
         for lote in pallets_deste_bloco:
             sku_counts = {}
             for item in lote:
@@ -339,7 +334,7 @@ def processar_pallets_operador(carrinho, df_produtos):
 
             total_cx_lote = sum(i["Qtd Caixas"] for i in sku_counts.values())
             
-            if total_cx_lote == cap_alvo:
+            if total_cx_lote >= cap_alvo or (len(pallets_deste_bloco) == 1 and total_cx_lote >= (cap_alvo * 0.5)):
                 tipo_p = "Misto Fechado 🟡" if len(sku_counts) > 1 else "Fechado 🟢"
             else:
                 tipo_p = "Pallet Final (Fracionado) 🟠"
