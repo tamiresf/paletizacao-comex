@@ -229,7 +229,7 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO DE EXPORTAÇÃO (MÁXIMA OTIMIZAÇÃO POR BLOCO DE CAIXA) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO DE EXPORTAÇÃO ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
@@ -293,27 +293,23 @@ def processar_pallets_operador(carrinho, df_produtos):
         cap_alvo = caixas_individuais[0]["Capacidade_Max"]
         pallets_deste_bloco = []
 
-        # Separa em lotes exatos da capacidade máxima do pallet para este tipo de caixa
         while len(caixas_individuais) >= cap_alvo:
             lote_cheio = caixas_individuais[:cap_alvo]
             caixas_individuais = caixas_individuais[cap_alvo:]
             pallets_deste_bloco.append(lote_cheio)
 
-        # Se houver sobra final menor que a capacidade, aplicamos o algoritmo de absorção inteligente
         if caixas_individuais:
             if pallets_deste_bloco:
-                # Tenta absorver as caixas restantes distribuindo no último pallet aberto do mesmo bloco
                 ultimo_pallet = pallets_deste_bloco[-1]
                 espaco_livre = cap_alvo - len(ultimo_pallet)
                 
-                if len(caixas_individuais) <= espaco_livre + (cap_alvo * 0.3): # Flexibilidade controlada de otimização
+                if len(caixas_individuais) <= espaco_livre + (cap_alvo * 0.3):
                     ultimo_pallet.extend(caixas_individuais)
                     caixas_individuais = []
             
             if caixas_individuais:
                 pallets_deste_bloco.append(caixas_individuais)
 
-        # Constrói os pallets do bloco atual
         for lote in pallets_deste_bloco:
             sku_counts = {}
             for item in lote:
@@ -352,6 +348,33 @@ def processar_pallets_operador(carrinho, df_produtos):
     df_temp = pd.DataFrame(pallets_bruto)
     if df_temp.empty:
         return df_temp
+
+    # --- NOVO: REORGANIZAÇÃO VISUAL POR ORDEM DE TIPO DE PALLET ---
+    # Prioridade: 1º Fechados (🟢), 2º Misto Fechados (🟡), 3º Fracionados (🟠)
+    def prioridade_tipo(tipo):
+        if "Fechado 🟢" in tipo:
+            return 1
+        elif "Misto Fechado 🟡" in tipo:
+            return 2
+        else:
+            return 3
+
+    df_temp["Prioridade"] = df_temp["Tipo"].apply(prioridade_tipo)
+    
+    # Mapeia os IDs antigos para uma nova numeração sequencial baseada na prioridade visual
+    pallets_ordenados_ids = (
+        df_temp.sort_values(by=["Prioridade", "Pallet_Num", "Ordem_Caixa"], ascending=[True, True, False])
+        [["Pallet_Num", "ID"]]
+        .drop_duplicates(subset=["Pallet_Num"])
+    )
+
+    mapa_novo_num = {}
+    for novo_idx, (_, row) in enumerate(pallets_ordenados_ids.iterrows(), 1):
+        mapa_novo_num[row["Pallet_Num"]] = (novo_idx, f"Pallet {novo_idx:02d}")
+
+    df_temp["Pallet_Num_Original"] = df_temp["Pallet_Num"]
+    df_temp["Pallet_Num"] = df_temp["Pallet_Num_Original"].map(lambda x: mapa_novo_num[x][0])
+    df_temp["ID"] = df_temp["Pallet_Num_Original"].map(lambda x: mapa_novo_num[x][1])
 
     df_consolidado = (
         df_temp.sort_values(
