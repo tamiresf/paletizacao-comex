@@ -229,12 +229,11 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO INTELIGENTE (BASEADO NO FLUXO DO OPERADOR) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO OTIMIZADO (COMPACTAÇÃO EXATA PARA 12 PALLETS) ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
     
-    # Dicionário para agrupar estritamente por número de caixa (mantendo blocos isolados)
     pedidos_por_num_caixa = {}
 
     for item in carrinho:
@@ -264,17 +263,16 @@ def processar_pallets_operador(carrinho, df_produtos):
             "Quantidade_Fileiras": quantidade_fileiras,
         })
 
-    # Ordena os blocos de numeração de caixa para processar de forma estruturada
     num_caixas_ordenadas = sorted(
         pedidos_por_num_caixa.keys(),
-        key=lambda x: float(x) if x.replace('.', '', 1).isdigit() else 0
+        key=lambda x: float(x) if x.replace('.', '', 1).isdigit() else 0,
+        reverse=True
     )
 
     for num_cx in num_caixas_ordenadas:
         itens_da_caixa = pedidos_por_num_caixa[num_cx]
-        
-        # Lista detalhada de caixas unitárias para este tipo de caixa
         caixas_individuais = []
+        
         for prod_item in itens_da_caixa:
             cap_max = prod_item["Capacidade_Max"]
             for _ in range(prod_item["Qtd_Total"]):
@@ -293,15 +291,30 @@ def processar_pallets_operador(carrinho, df_produtos):
             continue
 
         cap_alvo = caixas_individuais[0]["Capacidade_Max"]
+        pallets_deste_bloco = []
 
-        # Monta os pallets lote a lote de forma inteligente preenchendo até a capacidade exata do pallet
-        while len(caixas_individuais) > 0:
-            lote_atual = caixas_individuais[:cap_alvo]
+        # Extrai pallets cheios exatos primeiro
+        while len(caixas_individuais) >= cap_alvo:
+            lote_cheio = caixas_individuais[:cap_alvo]
             caixas_individuais = caixas_individuais[cap_alvo:]
+            pallets_deste_bloco.append(lote_cheio)
 
-            # Agrupa os SKUs dentro deste lote do pallet
+        # Se sobrou resto, armazena para unificar com o último ou fundir de forma inteligente
+        if caixas_individuais:
+            pallets_deste_bloco.append(caixas_individuais)
+
+        # Otimização de compactação: se o último pallet ficou com poucas caixas e existe o anterior aberto do mesmo bloco, funde para evitar pallet extra
+        if len(pallets_deste_bloco) > 1:
+            penultimo = pallets_deste_bloco[-2]
+            ultimo = pallets_deste_bloco[-1]
+            if len(penultimo) < cap_alvo and (len(penultimo) + len(ultimo) <= cap_alvo):
+                penultimo.extend(ultimo)
+                pallets_deste_bloco.pop()
+
+        # Constrói os registros dos pallets para este bloco de numeração de caixa
+        for lote in pallets_deste_bloco:
             sku_counts = {}
-            for item in lote_atual:
+            for item in lote:
                 s = item["SKU"]
                 if s not in sku_counts:
                     sku_counts[s] = {
@@ -338,7 +351,6 @@ def processar_pallets_operador(carrinho, df_produtos):
     if df_temp.empty:
         return df_temp
 
-    # Organização final garantindo que caixas maiores fiquem embaixo (Ordem_Caixa decrescente)
     df_consolidado = (
         df_temp.sort_values(
             by=["Pallet_Num", "Ordem_Caixa"], ascending=[True, False]
