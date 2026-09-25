@@ -229,14 +229,14 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO DE PALETIZAÇÃO REVISADO (UNIFICAÇÃO RIGOROSA POR TIPO DE CAIXA E FILEIRAS) ---
+# --- 6. ALGORITMO DE PALETIZAÇÃO COM ISOLAMENTO ESTRITO POR NÚMERO DE CAIXA ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
     
-    sobras_por_tipo_caixa = {}
+    # Dicionário para separar os itens estritamente por Número da Caixa
+    pedidos_por_num_caixa = {}
 
-    # Passo 1: Aloca os pallets 100% fechados de cada SKU individualmente
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -249,120 +249,134 @@ def processar_pallets_operador(carrinho, df_produtos):
         caixas_por_fileira = int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
         quantidade_fileiras = int(prod["ALTURA"])
 
-        qtd_pallets_fechados = qtd_total_caixas // cap_max_caixas
-        resto = qtd_total_caixas % cap_max_caixas
+        if num_caixa not in pedidos_por_num_caixa:
+            pedidos_por_num_caixa[num_caixa] = []
 
-        for _ in range(qtd_pallets_fechados):
-            pallets_bruto.append({
-                "Pallet_Num": pallet_num,
-                "ID": f"Pallet {pallet_num:02d}",
-                "Tipo": "Fechado 🟢",
-                "SKU": sku,
-                "Produto": prod["NOME DO PRODUTO"],
-                "Qtd Caixas": cap_max_caixas,
-                "Total Peças": cap_max_caixas * pecas_por_caixa,
-                "Nº Caixa": num_caixa,
-                "Ordem_Caixa": ordem_cx,
-                "Caixas_Por_Fileira": caixas_por_fileira,
-                "Quantidade_Fileiras": quantidade_fileiras,
-            })
-            pallet_num += 1
+        pedidos_por_num_caixa[num_caixa].append({
+            "SKU": sku,
+            "Produto": prod["NOME DO PRODUTO"],
+            "Qtd_Total": qtd_total_caixas,
+            "Capacidade_Max": cap_max_caixas,
+            "Ordem_Caixa": ordem_cx,
+            "Nº Caixa": num_caixa,
+            "Pecas_Por_Caixa": pecas_por_caixa,
+            "Caixas_Por_Fileira": caixas_por_fileira,
+            "Quantidade_Fileiras": quantidade_fileiras,
+        })
 
-        if resto > 0:
-            if num_caixa not in sobras_por_tipo_caixa:
-                sobras_por_tipo_caixa[num_caixa] = []
+    # Processa cada grupo de numeração de caixa de forma totalmente isolada
+    for num_cx, itens_da_caixa in pedidos_por_num_caixa.items():
+        # Lista temporária de sobras para esta numeração de caixa específica
+        sobras_desta_caixa = []
 
-            sobras_por_tipo_caixa[num_caixa].append({
-                "SKU": sku,
-                "Produto": prod["NOME DO PRODUTO"],
-                "Qtd Caixas": resto,
-                "Pecas_Por_Caixa": pecas_por_caixa,
-                "Nº Caixa": num_caixa,
-                "Ordem_Caixa": ordem_cx,
-                "Caixas_Por_Fileira": caixas_por_fileira,
-                "Quantidade_Fileiras": quantidade_fileiras,
-                "Capacidade_Max_Caixas": cap_max_caixas,
-            })
+        for prod_item in itens_da_caixa:
+            sku = prod_item["SKU"]
+            qtd_total = prod_item["Qtd_Total"]
+            cap_max = prod_item["Capacidade_Max"]
 
-    # Passo 2: Processamento estrito das sobras agrupadas por tipo/numeração de caixa
-    tipos_caixas_ordenados = sorted(
-        sobras_por_tipo_caixa.keys(),
-        key=lambda x: int(re.sub(r"\D", "", x) or 0),
-        reverse=True
-    )
+            qtd_fechados = qtd_total // cap_max
+            resto = qtd_total % cap_max
 
-    pallet_atual_itens = []
-    caixas_no_pallet_atual = 0
-    cap_alvo_atual = 100  # Valor padrão de segurança
+            # 1. Gera pallets 100% fechados do SKU individualmente[cite: 3]
+            for _ in range(qtd_fechados):
+                pallets_bruto.append({
+                    "Pallet_Num": pallet_num,
+                    "ID": f"Pallet {pallet_num:02d}",
+                    "Tipo": "Fechado 🟢",
+                    "SKU": sku,
+                    "Produto": prod_item["Produto"],
+                    "Qtd Caixas": cap_max,
+                    "Total Peças": cap_max * prod_item["Pecas_Por_Caixa"],
+                    "Nº Caixa": prod_item["Nº Caixa"],
+                    "Ordem_Caixa": prod_item["Ordem_Caixa"],
+                    "Caixas_Por_Fileira": prod_item["Caixas_Por_Fileira"],
+                    "Quantidade_Fileiras": prod_item["Quantidade_Fileiras"],
+                })
+                pallet_num += 1
 
-    for num_cx in tipos_caixas_ordenados:
-        lista_sobras = sobras_por_tipo_caixa[num_cx]
-        
-        for row in lista_sobras:
-            cap_alvo_atual = row["Capacidade_Max_Caixas"]
-            qtd_restante = row["Qtd Caixas"]
+            if resto > 0:
+                sobras_desta_caixa.append({
+                    "SKU": sku,
+                    "Produto": prod_item["Produto"],
+                    "Qtd Caixas": resto,
+                    "Pecas_Por_Caixa": prod_item["Pecas_Por_Caixa"],
+                    "Nº Caixa": prod_item["Nº Caixa"],
+                    "Ordem_Caixa": prod_item["Ordem_Caixa"],
+                    "Caixas_Por_Fileira": prod_item["Caixas_Por_Fileira"],
+                    "Quantidade_Fileiras": prod_item["Quantidade_Fileiras"],
+                    "Capacidade_Max_Caixas": cap_max,
+                })
 
-            while qtd_restante > 0:
-                espaco_livre = cap_alvo_atual - caixas_no_pallet_atual
+        # 2. Junta as sobras dos produtos que usam ESTE MESMO NÚMERO DE CAIXA para formar pallets mistos fechados ou fracionados
+        if sobras_desta_caixa:
+            cap_alvo = sobras_desta_caixa[0]["Capacidade_Max_Caixas"]
+            pallet_atual_itens = []
+            caixas_no_pallet_atual = 0
 
-                if espaco_livre == 0:
-                    # Fecha o pallet atual que completou a capacidade exata
-                    pallet_label = f"Pallet {pallet_num:02d}"
-                    tipo_p = "Misto Fechado 🟡" if len(pallet_atual_itens) > 1 else "Fechado 🟢"
+            for row in sobras_desta_caixa:
+                qtd_restante = row["Qtd Caixas"]
+
+                while qtd_restante > 0:
+                    espaco_livre = cap_alvo - caixas_no_pallet_atual
+
+                    if espaco_livre == 0:
+                        pallet_label = f"Pallet {pallet_num:02d}"
+                        tipo_p = "Misto Fechado 🟡" if len(pallet_atual_itens) > 1 else "Fechado 🟢"
+                        for it in pallet_atual_itens:
+                            pallets_bruto.append({
+                                "Pallet_Num": pallet_num,
+                                "ID": pallet_label,
+                                "Tipo": tipo_p,
+                                **it
+                            })
+                        pallet_num += 1
+                        pallet_atual_itens = []
+                        caixas_no_pallet_atual = 0
+                        espaco_livre = cap_alvo
+
+                    qtd_alocar = min(qtd_restante, espaco_livre)
+
+                    encontrado = False
                     for it in pallet_atual_itens:
-                        pallets_bruto.append({
-                            "Pallet_Num": pallet_num,
-                            "ID": pallet_label,
-                            "Tipo": tipo_p,
-                            **it
+                        if it["SKU"] == row["SKU"]:
+                            it["Qtd Caixas"] += qtd_alocar
+                            it["Total Peças"] += qtd_alocar * row["Pecas_Por_Caixa"]
+                            encontrado = True
+                            break
+
+                    if not encontrado:
+                        pallet_atual_itens.append({
+                            "SKU": row["SKU"],
+                            "Produto": row["Produto"],
+                            "Qtd Caixas": qtd_alocar,
+                            "Total Peças": qtd_alocar * row["Pecas_Por_Caixa"],
+                            "Nº Caixa": row["Nº Caixa"],
+                            "Ordem_Caixa": row["Ordem_Caixa"],
+                            "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
+                            "Quantidade_Fileiras": row["Quantidade_Fileiras"],
                         })
-                    pallet_num += 1
-                    pallet_atual_itens = []
-                    caixas_no_pallet_atual = 0
-                    espaco_livre = cap_alvo_atual
 
-                qtd_alocar = min(qtd_restante, espaco_livre)
+                    caixas_no_pallet_atual += qtd_alocar
+                    qtd_restante -= qtd_alocar
 
-                # Verifica se o SKU já existe no pallet em construção para acumular
-                encontrado = False
+            # Se restou um pallet incompleto para esta numeração de caixa, ele fecha como fracionado exclusivo dela
+            if pallet_atual_itens:
+                pallet_label = f"Pallet {pallet_num:02d}"
+                tipo_p = "Misto Fechado 🟡" if caixas_no_pallet_atual == cap_alvo else "Pallet Final (Fracionado) 🟠"
                 for it in pallet_atual_itens:
-                    if it["SKU"] == row["SKU"]:
-                        it["Qtd Caixas"] += qtd_alocar
-                        it["Total Peças"] += qtd_alocar * row["Pecas_Por_Caixa"]
-                        encontrado = True
-                        break
-
-                if not encontrado:
-                    pallet_atual_itens.append({
-                        "SKU": row["SKU"],
-                        "Produto": row["Produto"],
-                        "Qtd Caixas": qtd_alocar,
-                        "Total Peças": qtd_alocar * row["Pecas_Por_Caixa"],
-                        "Nº Caixa": row["Nº Caixa"],
-                        "Ordem_Caixa": row["Ordem_Caixa"],
-                        "Caixas_Por_Fileira": row["Caixas_Por_Fileira"],
-                        "Quantidade_Fileiras": row["Quantidade_Fileiras"],
+                    pallets_bruto.append({
+                        "Pallet_Num": pallet_num,
+                        "ID": pallet_label,
+                        "Tipo": tipo_p,
+                        **it
                     })
-
-                caixas_no_pallet_atual += qtd_alocar
-                qtd_restante -= qtd_alocar
-
-    # Passo 3: Pallet fracionado final apenas para resíduos absolutos restantes
-    if pallet_atual_itens:
-        pallet_label = f"Pallet {pallet_num:02d}"
-        for it in pallet_atual_itens:
-            pallets_bruto.append({
-                "Pallet_Num": pallet_num,
-                "ID": pallet_label,
-                "Tipo": "Pallet Final (Fracionado) 🟠",
-                **it
-            })
+                pallet_num += 1
 
     df_temp = pd.DataFrame(pallets_bruto)
     if df_temp.empty:
         return df_temp
 
-    # Passo 4: Organização final garantindo que caixas maiores fiquem embaixo (Ordem_Caixa decrescente)
+    # Passo 3: Organização final garantindo que caixas maiores fiquem embaixo (Ordem_Caixa decrescente)
     df_consolidado = (
         df_temp.sort_values(
             by=["Pallet_Num", "Ordem_Caixa"], ascending=[True, False]
