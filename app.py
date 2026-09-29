@@ -229,14 +229,14 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO INTELIGENTE DE PALETIZAÇÃO COMEX ---
+# --- 6. ALGORITMO INTELIGENTE COM OTIMIZAÇÃO DE SOBRAS (SEM PALLETS ISOLADOS) ---
 def processar_pallets_operador(carrinho, df_produtos):
-    pallets_bruto = []
-    pallet_num = 1
-    
-    # 1. Agrupar itens do carrinho por Tipo/Número da Caixa (mesma família)
-    grupos_por_num_caixa = {}
+    # Dimensões aproximadas ou base de restrição baseadas nas especificações de caixas fornecidas
+    # Caixa 0: 230x145x125, Caixa 1: 285x155x125, Caixa 2: 295x185x130, Caixa 3: 375x195x145
+    pallets_fechados = []
+    sobras_globais = []
 
+    # 1. Primeira etapa: Criar lotes completos por SKU / Família
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -249,126 +249,108 @@ def processar_pallets_operador(carrinho, df_produtos):
         caixas_por_fileira = int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
         quantidade_fileiras = int(prod["ALTURA"])
 
-        if num_caixa not in grupos_por_num_caixa:
-            grupos_por_num_caixa[num_caixa] = []
+        caixas_restantes = qtd_total_caixas
 
-        grupos_por_num_caixa[num_caixa].append({
-            "SKU": sku,
-            "Produto": prod["NOME DO PRODUTO"],
-            "Qtd_Total": qtd_total_caixas,
-            "Capacidade_Max": cap_max_caixas,
-            "Ordem_Caixa": ordem_cx,
-            "Nº Caixa": num_caixa,
-            "Pecas_Por_Caixa": pecas_por_caixa,
-            "Caixas_Por_Fileira": caixas_por_fileira,
-            "Quantidade_Fileiras": quantidade_fileiras,
-        })
+        # Montar pallets completos (cheios)
+        while caixas_restantes >= cap_max_caixas:
+            lote_cheio = []
+            for _ in range(cap_max_caixas):
+                lote_cheio.append({
+                    "SKU": sku,
+                    "Produto": prod["NOME DO PRODUTO"],
+                    "Nº Caixa": num_caixa,
+                    "Ordem_Caixa": ordem_cx,
+                    "Pecas_Por_Caixa": pecas_por_caixa,
+                    "Caixas_Por_Fileira": caixas_por_fileira,
+                    "Quantidade_Fileiras": quantidade_fileiras,
+                    "Capacidade_Max": cap_max_caixas,
+                })
+            pallets_fechados.append(lote_cheio)
+            caixas_restantes -= cap_max_caixas
 
-    # Ordenar números de caixa de forma decrescente para manter a lógica de base pesada se necessário
-    num_caixas_ordenadas = sorted(
-        grupos_por_num_caixa.keys(),
-        key=lambda x: float(x) if x.replace('.', '', 1).isdigit() else 0,
-        reverse=True
-    )
+        # O que sobra vai para a lista de sobras para tentar mesclagem inteligente
+        if caixas_restantes > 0:
+            for _ in range(caixas_restantes):
+                sobras_globais.append({
+                    "SKU": sku,
+                    "Produto": prod["NOME DO PRODUTO"],
+                    "Nº Caixa": num_caixa,
+                    "Ordem_Caixa": ordem_cx,
+                    "Pecas_Por_Caixa": pecas_por_caixa,
+                    "Caixas_Por_Fileira": caixas_por_fileira,
+                    "Quantidade_Fileiras": quantidade_fileiras,
+                    "Capacidade_Max": cap_max_caixas,
+                })
 
-    # 2. Processar cada família/número de caixa separadamente, permitindo misturar SKUs da mesma família no mesmo pallet se sobrarem caixas
-    for num_cx in num_caixas_ordenadas:
-        itens_da_caixa = grupos_por_num_caixa[num_cx]
+    # 2. Segunda etapa: Organizar as sobras em pallets fracionados existentes ou novos, buscando otimizar o preenchimento
+    pallets_fracionados = []
+
+    while len(sobras_globais) > 0:
+        # Pega a primeira caixa da sobra
+        caixa_atual = sobras_globais.pop(0)
         
-        # Determinar a capacidade alvo padrão para esta família (geralmente a capacidade máxima do pallet do grupo)
-        cap_alvo = max([item["Capacidade_Max"] for item in itens_da_caixa]) if itens_da_caixa else 32
+        # Tenta achar um pallet fracionado já existente que tenha espaço e seja compatível (mesma capacidade ou menor número de caixas atual)
+        pallet_destino = None
+        
+        # Ordena os pallets fracionados correntes pelo que tem MENOS caixas para tentar concentrar as sobras
+        pallets_fracionados.sort(key=lambda p: len(p))
+        
+        for p in pallets_fracionados:
+            cap_max_pallet = p[0]["Capacidade_Max"]
+            if len(p) < cap_max_pallet:
+                # Regra opcional de compatibilidade de fileira/tamanho se necessário, mas aqui priorizamos o pallet com menos caixas
+                pallet_destino = p
+                break
+                
+        if pallet_destino is not None:
+            pallet_destino.append(caixa_atual)
+        else:
+            # Se não houver pallet fracionado com espaço, cria um novo pallet fracionado
+            pallets_fracionados.append([caixa_atual])
 
-        # Expandir todos os itens da família em caixas unitárias virtuais para alocação exata
-        caixas_individuais = []
-        for prod_item in itens_da_caixa:
-            for _ in range(prod_item["Qtd_Total"]):
-                caixas_individuais.append({
-                    "SKU": prod_item["SKU"],
-                    "Produto": prod_item["Produto"],
-                    "Nº Caixa": prod_item["Nº Caixa"],
-                    "Ordem_Caixa": prod_item["Ordem_Caixa"],
-                    "Pecas_Por_Caixa": prod_item["Pecas_Por_Caixa"],
-                    "Caixas_Por_Fileira": prod_item["Caixas_Por_Fileira"],
-                    "Quantidade_Fileiras": prod_item["Quantidade_Fileiras"],
-                    "Capacidade_Max": cap_alvo,
-                })
+    # Lista unificada de todos os lotes de pallets (cheios + fracionados)
+    todos_os_pallets = pallets_fechados + pallets_fracionados
 
-        if not caixas_individuais:
-            continue
+    # 3. Construir estrutura final consolidada
+    pallets_bruto = []
+    for idx, lote in enumerate(todos_os_pallets, 1):
+        sku_counts = {}
+        for item in lote:
+            s = item["SKU"]
+            if s not in sku_counts:
+                sku_counts[s] = {
+                    "SKU": s,
+                    "Produto": item["Produto"],
+                    "Nº Caixa": item["Nº Caixa"],
+                    "Ordem_Caixa": item["Ordem_Caixa"],
+                    "Qtd Caixas": 0,
+                    "Total Peças": 0,
+                    "Caixas_Por_Fileira": item["Caixas_Por_Fileira"],
+                    "Quantidade_Fileiras": item["Quantidade_Fileiras"],
+                }
+            sku_counts[s]["Qtd Caixas"] += 1
+            sku_counts[s]["Total Peças"] += item["Pecas_Por_Caixa"]
 
-        # Distribuir as caixas em lotes respeitando estritamente a capacidade máxima do pallet
-        pallets_deste_bloco = []
-        while len(caixas_individuais) > 0:
-            tamanho_lote = min(len(caixas_individuais), cap_alvo)
-            lote = caixas_individuais[:tamanho_lote]
-            caixas_individuais = caixas_individuais[tamanho_lote:]
-            pallets_deste_bloco.append(lote)
+        total_cx_lote = sum(i["Qtd Caixas"] for i in sku_counts.values())
+        cap_max_lote = lote[0]["Capacidade_Max"]
 
-        # Montar a estrutura de dados para cada pallet gerado neste bloco
-        for lote in pallets_deste_bloco:
-            sku_counts = {}
-            for item in lote:
-                s = item["SKU"]
-                if s not in sku_counts:
-                    sku_counts[s] = {
-                        "SKU": s,
-                        "Produto": item["Produto"],
-                        "Nº Caixa": item["Nº Caixa"],
-                        "Ordem_Caixa": item["Ordem_Caixa"],
-                        "Qtd Caixas": 0,
-                        "Total Peças": 0,
-                        "Caixas_Por_Fileira": item["Caixas_Por_Fileira"],
-                        "Quantidade_Fileiras": item["Quantidade_Fileiras"],
-                    }
-                sku_counts[s]["Qtd Caixas"] += 1
-                sku_counts[s]["Total Peças"] += item["Pecas_Por_Caixa"]
+        if total_cx_lote == cap_max_lote:
+            tipo_p = "Fechado 🟢" if len(sku_counts) == 1 else "Misto Fechado (Mesma Família) 🟡"
+        else:
+            tipo_p = "Pallet Consolidado / Fracionado 🟠"
 
-            total_cx_lote = sum(i["Qtd Caixas"] for i in sku_counts.values())
-            
-            # Definir o status/tipo do pallet de forma inteligente
-            if total_cx_lote == cap_alvo:
-                tipo_p = "Fechado 🟢" if len(sku_counts) == 1 else "Misto Fechado (Mesma Família) 🟡"
-            else:
-                tipo_p = "Pallet Final (Fracionado) 🟠"
-
-            pallet_label = f"Pallet {pallet_num:02d}"
-            for s_info in sku_counts.values():
-                pallets_bruto.append({
-                    "Pallet_Num": pallet_num,
-                    "ID": pallet_label,
-                    "Tipo": tipo_p,
-                    **s_info
-                })
-            pallet_num += 1
+        pallet_label = f"Pallet {idx:02d}"
+        for s_info in sku_counts.values():
+            pallets_bruto.append({
+                "Pallet_Num": idx,
+                "ID": pallet_label,
+                "Tipo": tipo_p,
+                **s_info
+            })
 
     df_temp = pd.DataFrame(pallets_bruto)
     if df_temp.empty:
         return df_temp
-
-    # --- 3. REORGANIZAÇÃO VISUAL POR ORDEM DE TIPO DE PALLET ---
-    def prioridade_tipo(tipo):
-        if "Fechado 🟢" in tipo:
-            return 1
-        elif "Misto Fechado" in tipo:
-            return 2
-        else:
-            return 3
-
-    df_temp["Prioridade"] = df_temp["Tipo"].apply(prioridade_tipo)
-    
-    pallets_ordenados_ids = (
-        df_temp.sort_values(by=["Prioridade", "Pallet_Num", "Ordem_Caixa"], ascending=[True, True, False])
-        [["Pallet_Num", "ID"]]
-        .drop_duplicates(subset=["Pallet_Num"])
-    )
-
-    mapa_novo_num = {}
-    for novo_idx, (_, row) in enumerate(pallets_ordenados_ids.iterrows(), 1):
-        mapa_novo_num[row["Pallet_Num"]] = (novo_idx, f"Pallet {novo_idx:02d}")
-
-    df_temp["Pallet_Num_Original"] = df_temp["Pallet_Num"]
-    df_temp["Pallet_Num"] = df_temp["Pallet_Num_Original"].map(lambda x: mapa_novo_num[x][0])
-    df_temp["ID"] = df_temp["Pallet_Num_Original"].map(lambda x: mapa_novo_num[x][1])
 
     df_consolidado = (
         df_temp.sort_values(
