@@ -229,12 +229,13 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO COM TRAVA ESTRITA DE CAPACIDADE MÁXIMA POR PALLET ---
+# --- 6. ALGORITMO INTELIGENTE DE PALETIZAÇÃO COMEX ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_bruto = []
     pallet_num = 1
     
-    pedidos_por_num_caixa = {}
+    # 1. Agrupar itens do carrinho por Tipo/Número da Caixa (mesma família)
+    grupos_por_num_caixa = {}
 
     for item in carrinho:
         sku = str(item["SKU"]).strip()
@@ -248,10 +249,10 @@ def processar_pallets_operador(carrinho, df_produtos):
         caixas_por_fileira = int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
         quantidade_fileiras = int(prod["ALTURA"])
 
-        if num_caixa not in pedidos_por_num_caixa:
-            pedidos_por_num_caixa[num_caixa] = []
+        if num_caixa not in grupos_por_num_caixa:
+            grupos_por_num_caixa[num_caixa] = []
 
-        pedidos_por_num_caixa[num_caixa].append({
+        grupos_por_num_caixa[num_caixa].append({
             "SKU": sku,
             "Produto": prod["NOME DO PRODUTO"],
             "Qtd_Total": qtd_total_caixas,
@@ -263,18 +264,23 @@ def processar_pallets_operador(carrinho, df_produtos):
             "Quantidade_Fileiras": quantidade_fileiras,
         })
 
+    # Ordenar números de caixa de forma decrescente para manter a lógica de base pesada se necessário
     num_caixas_ordenadas = sorted(
-        pedidos_por_num_caixa.keys(),
+        grupos_por_num_caixa.keys(),
         key=lambda x: float(x) if x.replace('.', '', 1).isdigit() else 0,
         reverse=True
     )
 
+    # 2. Processar cada família/número de caixa separadamente, permitindo misturar SKUs da mesma família no mesmo pallet se sobrarem caixas
     for num_cx in num_caixas_ordenadas:
-        itens_da_caixa = pedidos_por_num_caixa[num_cx]
-        caixas_individuais = []
+        itens_da_caixa = grupos_por_num_caixa[num_cx]
         
+        # Determinar a capacidade alvo padrão para esta família (geralmente a capacidade máxima do pallet do grupo)
+        cap_alvo = max([item["Capacidade_Max"] for item in itens_da_caixa]) if itens_da_caixa else 32
+
+        # Expandir todos os itens da família em caixas unitárias virtuais para alocação exata
+        caixas_individuais = []
         for prod_item in itens_da_caixa:
-            cap_max = prod_item["Capacidade_Max"]
             for _ in range(prod_item["Qtd_Total"]):
                 caixas_individuais.append({
                     "SKU": prod_item["SKU"],
@@ -284,22 +290,21 @@ def processar_pallets_operador(carrinho, df_produtos):
                     "Pecas_Por_Caixa": prod_item["Pecas_Por_Caixa"],
                     "Caixas_Por_Fileira": prod_item["Caixas_Por_Fileira"],
                     "Quantidade_Fileiras": prod_item["Quantidade_Fileiras"],
-                    "Capacidade_Max": cap_max,
+                    "Capacidade_Max": cap_alvo,
                 })
 
         if not caixas_individuais:
             continue
 
-        cap_alvo = caixas_individuais[0]["Capacidade_Max"]
+        # Distribuir as caixas em lotes respeitando estritamente a capacidade máxima do pallet
         pallets_deste_bloco = []
-
-        # TRAVA DE SEGURANÇA: Garante estritamente que nenhum lote ultrapasse a capacidade máxima cadastrada
         while len(caixas_individuais) > 0:
             tamanho_lote = min(len(caixas_individuais), cap_alvo)
             lote = caixas_individuais[:tamanho_lote]
             caixas_individuais = caixas_individuais[tamanho_lote:]
             pallets_deste_bloco.append(lote)
 
+        # Montar a estrutura de dados para cada pallet gerado neste bloco
         for lote in pallets_deste_bloco:
             sku_counts = {}
             for item in lote:
@@ -320,8 +325,9 @@ def processar_pallets_operador(carrinho, df_produtos):
 
             total_cx_lote = sum(i["Qtd Caixas"] for i in sku_counts.values())
             
+            # Definir o status/tipo do pallet de forma inteligente
             if total_cx_lote == cap_alvo:
-                tipo_p = "Misto Fechado 🟡" if len(sku_counts) > 1 else "Fechado 🟢"
+                tipo_p = "Fechado 🟢" if len(sku_counts) == 1 else "Misto Fechado (Mesma Família) 🟡"
             else:
                 tipo_p = "Pallet Final (Fracionado) 🟠"
 
@@ -339,12 +345,11 @@ def processar_pallets_operador(carrinho, df_produtos):
     if df_temp.empty:
         return df_temp
 
-    # --- REORGANIZAÇÃO VISUAL POR ORDEM DE TIPO DE PALLET ---
-    # Prioridade: 1º Fechados (🟢), 2º Misto Fechados (🟡), 3º Fracionados (🟠)
+    # --- 3. REORGANIZAÇÃO VISUAL POR ORDEM DE TIPO DE PALLET ---
     def prioridade_tipo(tipo):
         if "Fechado 🟢" in tipo:
             return 1
-        elif "Misto Fechado 🟡" in tipo:
+        elif "Misto Fechado" in tipo:
             return 2
         else:
             return 3
