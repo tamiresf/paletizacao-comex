@@ -229,86 +229,85 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO RIGOROSO DE PALETIZAÇÃO POR FILEIRAS COMPLETAS ---
+# --- 6. ALGORITMO INTELIGENTE POR FILEIRAS COMPLETAS (BASEADA NA CAPACIDADE DA CAMADA) ---
 def processar_pallets_operador(carrinho, df_produtos):
-    pallets_fechados = []
-    sobras_globais = []
-
-    # 1. Expandir e agrupar respeitando estritamente a capacidade máxima do pallet
+    # Dicionário para gerenciar o estoque pendente de caixas de cada SKU no pedido
+    estoque_por_sku = {}
+    
     for item in carrinho:
         sku = str(item["SKU"]).strip()
-        qtd_total_caixas = int(item["Qtd_Caixas"])
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
+        
+        estoque_por_sku[sku] = {
+            "SKU": sku,
+            "Produto": prod["NOME DO PRODUTO"],
+            "Nº Caixa": str(prod["NUMERO DA CAIXA"]).strip(),
+            "Ordem_Caixa": int(prod.get("Ordem_Caixa", 0)),
+            "Pecas_Por_Caixa": int(prod["QUANTIDADE DE PEÇAS"]),
+            "Caixas_Por_Fileira": int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"]),
+            "Quantidade_Fileiras": int(prod["ALTURA"]),
+            "Capacidade_Max": int(prod["QUANTIDADE DE CAIXAS NO PALLET"]),
+            "Qtd_Disponivel": int(item["Qtd_Caixas"])
+        }
 
-        cap_max_caixas = int(prod["QUANTIDADE DE CAIXAS NO PALLET"])
-        ordem_cx = int(prod.get("Ordem_Caixa", 0))
-        num_caixa = str(prod["NUMERO DA CAIXA"]).strip()
-        pecas_por_caixa = int(prod["QUANTIDADE DE PEÇAS"])
-        caixas_por_fileira = int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
-        quantidade_fileiras = int(prod["ALTURA"])
+    pallets_gerados = []
+    pallet_num = 1
 
-        caixas_restantes = qtd_total_caixas
+    # Enquanto houver caixas pendentes de alocação em algum SKU
+    while any(info["Qtd_Disponivel"] > 0 for info in estoque_por_sku.values()):
+        # Iniciar a montagem de um novo pallet
+        lote_pallet = []
+        
+        # Determinar qual o tamanho da fileira padrão para este pallet baseando-se no primeiro SKU disponível
+SKUs_ativos = [info for info in estoque_por_sku.values() if info["Qtd_Disponivel"] > 0]
+if not SKUs_ativos:
+    break
 
-        # Montar pallets completos (cheios)
-        while caixas_restantes >= cap_max_caixas:
-            lote_cheio = []
-            for _ in range(cap_max_caixas):
-                lote_cheio.append({
-                    "SKU": sku,
-                    "Produto": prod["NOME DO PRODUTO"],
-                    "Nº Caixa": num_caixa,
-                    "Ordem_Caixa": ordem_cx,
-                    "Pecas_Por_Caixa": pecas_por_caixa,
-                    "Caixas_Por_Fileira": caixas_por_fileira,
-                    "Quantidade_Fileiras": quantidade_fileiras,
-                    "Capacidade_Max": cap_max_caixas,
-                })
-            pallets_fechados.append(lote_cheio)
-            caixas_restantes -= cap_max_caixas
+sku_principal = SKUs_ativos[0]
+cap_max_pallet = sku_principal["Capacidade_Max"]
+cx_por_fileira = sku_principal["Caixas_Por_Fileira"]
+max_fileiras = sku_principal["Quantidade_Fileiras"]
 
-        # Sobras vão para a lista global de otimização de fileiras
-        if caixas_restantes > 0:
-            for _ in range(caixas_restantes):
-                sobras_globais.append({
-                    "SKU": sku,
-                    "Produto": prod["NOME DO PRODUTO"],
-                    "Nº Caixa": num_caixa,
-                    "Ordem_Caixa": ordem_cx,
-                    "Pecas_Por_Caixa": pecas_por_caixa,
-                    "Caixas_Por_Fileira": caixas_por_fileira,
-                    "Quantidade_Fileiras": quantidade_fileiras,
-                    "Capacidade_Max": cap_max_caixas,
-                })
+# Montar o pallet fileira por fileira (camada por camada)
+fileira_atual = 0
+while fileira_atual < max_fileiras and any(info["Qtd_Disponivel"] > 0 for info in estoque_por_sku.values()):
+    vagas_fileira = cx_por_fileira
+    
+    # Tentar preencher a fileira atual com SKUs disponíveis (priorizando a mesma família ou numeração de caixa)
+    while vagas_fileira > 0:
+        # Procurar SKU disponível que tenha caixas
+        skus_com_saldo = [s for s in estoque_por_sku.values() if s["Qtd_Disponivel"] > 0]
+        if not skus_com_saldo:
+            break
+            
+        # Priorizar SKU com maior saldo ou da mesma numeração de caixa para completar a fileira
+        skus_com_saldo.sort(key=lambda x: (x["Nº Caixa"] == sku_principal["Nº Caixa"], x["Qtd_Disponivel"]), reverse=True)
+        sku_escolhido = skus_com_saldo[0]
+        
+        qtd_a_pegar = min(vagas_fileira, sku_escolhido["Qtd_Disponivel"])
+        
+        for _ in range(qtd_a_pegar):
+            lote_pallet.append({
+                "SKU": sku_escolhido["SKU"],
+                "Produto": sku_escolhido["Produto"],
+                "Nº Caixa": sku_escolhido["Nº Caixa"],
+                "Ordem_Caixa": sku_escolhido["Ordem_Caixa"],
+                "Pecas_Por_Caixa": sku_escolhido["Pecas_Por_Caixa"],
+                "Caixas_Por_Fileira": sku_escolhido["Caixas_Por_Fileira"],
+                "Quantidade_Fileiras": sku_escolhido["Quantidade_Fileiras"],
+            })
+            
+        sku_escolhido["Qtd_Disponivel"] -= qtd_a_pegar
+        vagas_fileira -= qtd_a_pegar
+        
+    fileira_atual += 1
+    
+        if not lote_pallet:
+            break
 
-    # 2. Distribuir sobras nos pallets fracionados garantindo o preenchimento por blocos de fileira ou complementos exatos
-    pallets_fracionados = []
-
-    while len(sobras_globais) > 0:
-        caixa_atual = sobras_globais.pop(0)
-        pallet_destino = None
-
-        # Ordenar os pallets fracionados correntes para priorizar o que tem MENOS caixas (último pallet)
-        pallets_fracionados.sort(key=lambda p: len(p))
-
-        for p in pallets_fracionados:
-            cap_max_pallet = p[0]["Capacidade_Max"]
-            if len(p) < cap_max_pallet:
-                # Verificar se pertence à mesma numeração de caixa ou se a camada suporta complementação
-                pallet_destino = p
-                break
-
-        if pallet_destino is not None:
-            pallet_destino.append(caixa_atual)
-        else:
-            pallets_fracionados.append([caixa_atual])
-
-    todos_os_pallets = pallets_fechados + pallets_fracionados
-
-    # 3. Consolidar e formatar a exibição garantindo que o quantitativo por SKU reflita fielmente as fileiras e caixas agrupadas
-    pallets_bruto = []
-    for idx, lote in enumerate(todos_os_pallets, 1):
+        # Consolidar o pallet formado
         sku_counts = {}
-        for item in lote:
+        for item in lote_pallet:
             s = item["SKU"]
             if s not in sku_counts:
                 sku_counts[s] = {
@@ -325,23 +324,23 @@ def processar_pallets_operador(carrinho, df_produtos):
             sku_counts[s]["Total Peças"] += item["Pecas_Por_Caixa"]
 
         total_cx_lote = sum(i["Qtd Caixas"] for i in sku_counts.values())
-        cap_max_lote = lote[0]["Capacidade_Max"]
-
-        if total_cx_lote == cap_max_lote:
+        
+        if total_cx_lote >= cap_max_pallet:
             tipo_p = "Fechado 🟢" if len(sku_counts) == 1 else "Misto Fechado 🟡"
         else:
-            tipo_p = "Pallet Fracionado (Otimizado) 🟠"
+            tipo_p = "Pallet Fracionado (Otimizado por Fileiras) 🟠"
 
-        pallet_label = f"Pallet {idx:02d}"
+        pallet_label = f"Pallet {pallet_num:02d}"
         for s_info in sku_counts.values():
-            pallets_bruto.append({
-                "Pallet_Num": idx,
+            pallets_gerados.append({
+                "Pallet_Num": pallet_num,
                 "ID": pallet_label,
                 "Tipo": tipo_p,
                 **s_info
             })
+        pallet_num += 1
 
-    df_temp = pd.DataFrame(pallets_bruto)
+    df_temp = pd.DataFrame(pallets_gerados)
     if df_temp.empty:
         return df_temp
 
@@ -515,11 +514,9 @@ if st.session_state.processado and st.session_state.carrinho:
                 use_container_width=True,
             )
 
-            st.markdown(
-                f"""
+            str_destaque = f"""
                 <div style="text-align: right;">
                     <span class="total-caixas-destaque">📦 Total de Caixas do Pallet: {total_cx} cx</span>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                """
+            st.markdown(str_destaque, unsafe_allow_html=True)
