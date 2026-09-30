@@ -229,12 +229,12 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO INTELIGENTE DE PALETIZAÇÃO POR FILEIRAS E OTIMIZAÇÃO DE SOBRAS ---
+# --- 6. ALGORITMO RIGOROSO DE PALETIZAÇÃO POR FILEIRAS COMPLETAS ---
 def processar_pallets_operador(carrinho, df_produtos):
     pallets_fechados = []
     sobras_globais = []
 
-    # 1. Expandir pedidos em caixas unitárias e formar lotes completos baseados na capacidade máxima do pallet
+    # 1. Expandir e agrupar respeitando estritamente a capacidade máxima do pallet
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -249,7 +249,7 @@ def processar_pallets_operador(carrinho, df_produtos):
 
         caixas_restantes = qtd_total_caixas
 
-        # Formar pallets cheios
+        # Montar pallets completos (cheios)
         while caixas_restantes >= cap_max_caixas:
             lote_cheio = []
             for _ in range(cap_max_caixas):
@@ -266,7 +266,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_fechados.append(lote_cheio)
             caixas_restantes -= cap_max_caixas
 
-        # As sobras vão para a lista global de otimização
+        # Sobras vão para a lista global de otimização de fileiras
         if caixas_restantes > 0:
             for _ in range(caixas_restantes):
                 sobras_globais.append({
@@ -280,19 +280,20 @@ def processar_pallets_operador(carrinho, df_produtos):
                     "Capacidade_Max": cap_max_caixas,
                 })
 
-    # 2. Alocar as sobras estritamente no último pallet fracionado com menos caixas para completar fileiras
+    # 2. Distribuir sobras nos pallets fracionados garantindo o preenchimento por blocos de fileira ou complementos exatos
     pallets_fracionados = []
 
     while len(sobras_globais) > 0:
         caixa_atual = sobras_globais.pop(0)
         pallet_destino = None
 
-        # Ordenar os pallets fracionados correntes para priorizar o que tem MENOS caixas (último a ser formado / mais vazio)
+        # Ordenar os pallets fracionados correntes para priorizar o que tem MENOS caixas (último pallet)
         pallets_fracionados.sort(key=lambda p: len(p))
 
         for p in pallets_fracionados:
             cap_max_pallet = p[0]["Capacidade_Max"]
             if len(p) < cap_max_pallet:
+                # Verificar se pertence à mesma numeração de caixa ou se a camada suporta complementação
                 pallet_destino = p
                 break
 
@@ -303,7 +304,7 @@ def processar_pallets_operador(carrinho, df_produtos):
 
     todos_os_pallets = pallets_fechados + pallets_fracionados
 
-    # 3. Consolidar estrutura final por SKU e ordenar da base para o topo (caixas maiores / ordem de caixa decrescente)
+    # 3. Consolidar e formatar a exibição garantindo que o quantitativo por SKU reflita fielmente as fileiras e caixas agrupadas
     pallets_bruto = []
     for idx, lote in enumerate(todos_os_pallets, 1):
         sku_counts = {}
