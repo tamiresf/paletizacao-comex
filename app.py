@@ -229,9 +229,9 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO POR NUMERAÇÃO DE CAIXA E SOBRAS CONSOLIDADAS NO ÚLTIMO PALLET ---
+# --- 6. ALGORITMO RIGOROSO POR FILEIRAS E AGRUPAMENTO POR TIPO/FAMÍLIA ---
 def processar_pallets_operador(carrinho, df_produtos):
-    # Separar itens por numeração de caixa
+    # Agrupar itens do carrinho por Numeração de Caixa e Fileira
     grupos_por_num_caixa = {}
     
     for item in carrinho:
@@ -257,7 +257,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     pallets_fechados = []
     sobras_totais = []
 
-    # Processar cada grupo de numeração de caixa separadamente para formar pallets fechados
+    # Processar cada grupo de numeração de caixa estritamente separadamente
     for num_cx, itens_grupo in grupos_por_num_caixa.items():
         while any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
             skus_ativos = [i for i in itens_grupo if i["Qtd_Disponivel"] > 0]
@@ -272,12 +272,14 @@ def processar_pallets_operador(carrinho, df_produtos):
             lote_pallet = []
             fileira_atual = 0
             
+            # Montar o pallet fileira por fileira sem ultrapassar a capacidade máxima
             while fileira_atual < max_fileiras and any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
                 vagas_fileira = cx_por_fileira
                 while vagas_fileira > 0:
                     com_saldo = [i for i in itens_grupo if i["Qtd_Disponivel"] > 0]
                     if not com_saldo:
                         break
+                    # Priorizar SKUs com maior saldo para completar fileiras de forma inteligente
                     com_saldo.sort(key=lambda x: x["Qtd_Disponivel"], reverse=True)
                     escolhido = com_saldo[0]
                     
@@ -301,17 +303,22 @@ def processar_pallets_operador(carrinho, df_produtos):
                 break
                 
             total_cx_lote = len(lote_pallet)
-            # Se o pallet estiver completo (atingiu a capacidade máxima daquela numeração)
-            if total_cx_lote >= cap_max:
-                pallets_fechados.append(lote_pallet)
+            
+            # Se atingiu a capacidade padrão do pallet ou fechou perfeitamente
+            if total_cx_lote >= cap_max or not any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
+                # Verificar se o lote está completo ou se é sobra pura do grupo
+                if total_cx_lote >= cap_max:
+                    pallets_fechados.append(lote_pallet)
+                else:
+                    sobras_totais.extend(lote_pallet)
             else:
-                # Se for sobra do grupo, guarda para o último pallet misto de sobras
-                sobras_totais.extend(lote_pallet)
+                pallets_fechados.append(lote_pallet)
 
-    # Agrupar todas as sobras no ÚLTIMO pallet (com numerações diferentes permitidas, ordenadas da maior caixa embaixo para a menor em cima)
     pallets_gerados = list(pallets_fechados)
+
+    # Caso tenham sobrado caixas, consolidar exclusivamente no ÚLTIMO PALLET
     if sobras_totais:
-        # Ordenar sobras por Ordem_Caixa decrescente (caixas maiores embaixo, menores em cima)
+        # Ordenar rigorosamente por Ordem_Caixa decrescente (caixas com numeração maior embaixo, menores em cima)
         sobras_totais.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
         pallets_gerados.append(sobras_totais)
 
