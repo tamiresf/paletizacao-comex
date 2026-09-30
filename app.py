@@ -229,14 +229,12 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO INTELIGENTE COM OTIMIZAÇÃO DE SOBRAS (SEM PALLETS ISOLADOS) ---
+# --- 6. ALGORITMO INTELIGENTE DE PALETIZAÇÃO POR FILEIRAS E OTIMIZAÇÃO DE SOBRAS ---
 def processar_pallets_operador(carrinho, df_produtos):
-    # Dimensões aproximadas ou base de restrição baseadas nas especificações de caixas fornecidas
-    # Caixa 0: 230x145x125, Caixa 1: 285x155x125, Caixa 2: 295x185x130, Caixa 3: 375x195x145
     pallets_fechados = []
     sobras_globais = []
 
-    # 1. Primeira etapa: Criar lotes completos por SKU / Família
+    # 1. Expandir pedidos em caixas unitárias e formar lotes completos baseados na capacidade máxima do pallet
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         qtd_total_caixas = int(item["Qtd_Caixas"])
@@ -251,7 +249,7 @@ def processar_pallets_operador(carrinho, df_produtos):
 
         caixas_restantes = qtd_total_caixas
 
-        # Montar pallets completos (cheios)
+        # Formar pallets cheios
         while caixas_restantes >= cap_max_caixas:
             lote_cheio = []
             for _ in range(cap_max_caixas):
@@ -268,7 +266,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_fechados.append(lote_cheio)
             caixas_restantes -= cap_max_caixas
 
-        # O que sobra vai para a lista de sobras para tentar mesclagem inteligente
+        # As sobras vão para a lista global de otimização
         if caixas_restantes > 0:
             for _ in range(caixas_restantes):
                 sobras_globais.append({
@@ -282,36 +280,30 @@ def processar_pallets_operador(carrinho, df_produtos):
                     "Capacidade_Max": cap_max_caixas,
                 })
 
-    # 2. Segunda etapa: Organizar as sobras em pallets fracionados existentes ou novos, buscando otimizar o preenchimento
+    # 2. Alocar as sobras estritamente no último pallet fracionado com menos caixas para completar fileiras
     pallets_fracionados = []
 
     while len(sobras_globais) > 0:
-        # Pega a primeira caixa da sobra
         caixa_atual = sobras_globais.pop(0)
-        
-        # Tenta achar um pallet fracionado já existente que tenha espaço e seja compatível (mesma capacidade ou menor número de caixas atual)
         pallet_destino = None
-        
-        # Ordena os pallets fracionados correntes pelo que tem MENOS caixas para tentar concentrar as sobras
+
+        # Ordenar os pallets fracionados correntes para priorizar o que tem MENOS caixas (último a ser formado / mais vazio)
         pallets_fracionados.sort(key=lambda p: len(p))
-        
+
         for p in pallets_fracionados:
             cap_max_pallet = p[0]["Capacidade_Max"]
             if len(p) < cap_max_pallet:
-                # Regra opcional de compatibilidade de fileira/tamanho se necessário, mas aqui priorizamos o pallet com menos caixas
                 pallet_destino = p
                 break
-                
+
         if pallet_destino is not None:
             pallet_destino.append(caixa_atual)
         else:
-            # Se não houver pallet fracionado com espaço, cria um novo pallet fracionado
             pallets_fracionados.append([caixa_atual])
 
-    # Lista unificada de todos os lotes de pallets (cheios + fracionados)
     todos_os_pallets = pallets_fechados + pallets_fracionados
 
-    # 3. Construir estrutura final consolidada
+    # 3. Consolidar estrutura final por SKU e ordenar da base para o topo (caixas maiores / ordem de caixa decrescente)
     pallets_bruto = []
     for idx, lote in enumerate(todos_os_pallets, 1):
         sku_counts = {}
@@ -335,9 +327,9 @@ def processar_pallets_operador(carrinho, df_produtos):
         cap_max_lote = lote[0]["Capacidade_Max"]
 
         if total_cx_lote == cap_max_lote:
-            tipo_p = "Fechado 🟢" if len(sku_counts) == 1 else "Misto Fechado (Mesma Família) 🟡"
+            tipo_p = "Fechado 🟢" if len(sku_counts) == 1 else "Misto Fechado 🟡"
         else:
-            tipo_p = "Pallet Consolidado / Fracionado 🟠"
+            tipo_p = "Pallet Fracionado (Otimizado) 🟠"
 
         pallet_label = f"Pallet {idx:02d}"
         for s_info in sku_counts.values():
