@@ -229,9 +229,8 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO INTELIGENTE POR FILEIRAS COMPLETAS (BASEADA NA CAPACIDADE DA CAMADA) ---
+# --- 6. ALGORITMO INTELIGENTE POR FILEIRAS COMPLETAS ---
 def processar_pallets_operador(carrinho, df_produtos):
-    # Dicionário para gerenciar o estoque pendente de caixas de cada SKU no pedido
     estoque_por_sku = {}
     
     for item in carrinho:
@@ -253,59 +252,51 @@ def processar_pallets_operador(carrinho, df_produtos):
     pallets_gerados = []
     pallet_num = 1
 
-    # Enquanto houver caixas pendentes de alocação em algum SKU
     while any(info["Qtd_Disponivel"] > 0 for info in estoque_por_sku.values()):
-        # Iniciar a montagem de um novo pallet
         lote_pallet = []
         
-        # Determinar qual o tamanho da fileira padrão para este pallet baseando-se no primeiro SKU disponível
-SKUs_ativos = [info for info in estoque_por_sku.values() if info["Qtd_Disponivel"] > 0]
-if not SKUs_ativos:
-    break
-
-sku_principal = SKUs_ativos[0]
-cap_max_pallet = sku_principal["Capacidade_Max"]
-cx_por_fileira = sku_principal["Caixas_Por_Fileira"]
-max_fileiras = sku_principal["Quantidade_Fileiras"]
-
-# Montar o pallet fileira por fileira (camada por camada)
-fileira_atual = 0
-while fileira_atual < max_fileiras and any(info["Qtd_Disponivel"] > 0 for info in estoque_por_sku.values()):
-    vagas_fileira = cx_por_fileira
-    
-    # Tentar preencher a fileira atual com SKUs disponíveis (priorizando a mesma família ou numeração de caixa)
-    while vagas_fileira > 0:
-        # Procurar SKU disponível que tenha caixas
-        skus_com_saldo = [s for s in estoque_por_sku.values() if s["Qtd_Disponivel"] > 0]
-        if not skus_com_saldo:
+        skus_ativos = [info for info in estoque_por_sku.values() if info["Qtd_Disponivel"] > 0]
+        if not skus_ativos:
             break
+
+        sku_principal = skus_ativos[0]
+        cap_max_pallet = sku_principal["Capacidade_Max"]
+        cx_por_fileira = sku_principal["Caixas_Por_Fileira"]
+        max_fileiras = sku_principal["Quantidade_Fileiras"]
+
+        fileira_atual = 0
+        while fileira_atual < max_fileiras and any(info["Qtd_Disponivel"] > 0 for info in estoque_por_sku.values()):
+            vagas_fileira = cx_por_fileira
             
-        # Priorizar SKU com maior saldo ou da mesma numeração de caixa para completar a fileira
-        skus_com_saldo.sort(key=lambda x: (x["Nº Caixa"] == sku_principal["Nº Caixa"], x["Qtd_Disponivel"]), reverse=True)
-        sku_escolhido = skus_com_saldo[0]
+            while vagas_fileira > 0:
+                skus_com_saldo = [s for s in estoque_por_sku.values() if s["Qtd_Disponivel"] > 0]
+                if not skus_com_saldo:
+                    break
+                    
+                skus_com_saldo.sort(key=lambda x: (x["Nº Caixa"] == sku_principal["Nº Caixa"], x["Qtd_Disponivel"]), reverse=True)
+                sku_escolhido = skus_com_saldo[0]
+                
+                qtd_a_pegar = min(vagas_fileira, sku_escolhido["Qtd_Disponivel"])
+                
+                for _ in range(qtd_a_pegar):
+                    lote_pallet.append({
+                        "SKU": sku_escolhido["SKU"],
+                        "Produto": sku_escolhido["Produto"],
+                        "Nº Caixa": sku_escolhido["Nº Caixa"],
+                        "Ordem_Caixa": sku_escolhido["Ordem_Caixa"],
+                        "Pecas_Por_Caixa": sku_escolhido["Pecas_Por_Caixa"],
+                        "Caixas_Por_Fileira": sku_escolhido["Caixas_Por_Fileira"],
+                        "Quantidade_Fileiras": sku_escolhido["Quantidade_Fileiras"],
+                    })
+                    
+                sku_escolhido["Qtd_Disponivel"] -= qtd_a_pegar
+                vagas_fileira -= qtd_a_pegar
+                
+            fileira_atual += 1
         
-        qtd_a_pegar = min(vagas_fileira, sku_escolhido["Qtd_Disponivel"])
-        
-        for _ in range(qtd_a_pegar):
-            lote_pallet.append({
-                "SKU": sku_escolhido["SKU"],
-                "Produto": sku_escolhido["Produto"],
-                "Nº Caixa": sku_escolhido["Nº Caixa"],
-                "Ordem_Caixa": sku_escolhido["Ordem_Caixa"],
-                "Pecas_Por_Caixa": sku_escolhido["Pecas_Por_Caixa"],
-                "Caixas_Por_Fileira": sku_escolhido["Caixas_Por_Fileira"],
-                "Quantidade_Fileiras": sku_escolhido["Quantidade_Fileiras"],
-            })
-            
-        sku_escolhido["Qtd_Disponivel"] -= qtd_a_pegar
-        vagas_fileira -= qtd_a_pegar
-        
-    fileira_atual += 1
-    
         if not lote_pallet:
             break
 
-        # Consolidar o pallet formado
         sku_counts = {}
         for item in lote_pallet:
             s = item["SKU"]
