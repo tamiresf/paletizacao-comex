@@ -229,103 +229,90 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO HIERÁRQUICO POR NUMERAÇÃO, ALTURA E SOBRAS NO ÚLTIMO PALLET ---
+# --- 6. ALGORITMO ROBUSTO DE PALETIZAÇÃO POR FILEIRAS E RESPEITO À ALTURA ---
 def processar_pallets_operador(carrinho, df_produtos):
-    # Agrupar itens estritamente por Numeração de Caixa e Altura (Fileira)
-    grupos_por_chave = {}
-
+    # Carregar saldo de itens do carrinho
+    estoque_por_sku = {}
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
-        num_cx = str(prod["NUMERO DA CAIXA"]).strip()
-        cx_por_fileira = int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
-        altura = int(prod["ALTURA"])
-        
-        chave = (num_cx, cx_por_fileira, altura)
-        
-        if chave not in grupos_por_chave:
-            grupos_por_chave[chave] = []
-            
-        grupos_por_chave[chave].append({
+        estoque_por_sku[sku] = {
             "SKU": sku,
             "Produto": prod["NOME DO PRODUTO"],
-            "Nº Caixa": num_cx,
+            "Nº Caixa": str(prod["NUMERO DA CAIXA"]).strip(),
             "Ordem_Caixa": int(prod.get("Ordem_Caixa", 0)),
             "Pecas_Por_Caixa": int(prod["QUANTIDADE DE PEÇAS"]),
-            "Caixas_Por_Fileira": cx_por_fileira,
-            "Quantidade_Fileiras": altura,
+            "Caixas_Por_Fileira": int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"]),
+            "Quantidade_Fileiras": int(prod["ALTURA"]),
             "Capacidade_Max": int(prod["QUANTIDADE DE CAIXAS NO PALLET"]),
             "Qtd_Disponivel": int(item["Qtd_Caixas"])
-        })
+        }
 
-    pallets_fechados = []
-    sobras_totais = []
-
-    # Processar cada grupo hierarquicamente
-    for chave, itens_grupo in grupos_por_chave.items():
-        while any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
-            skus_ativos = [i for i in itens_grupo if i["Qtd_Disponivel"] > 0]
-            if not skus_ativos:
-                break
-                
-            sku_ref = skus_ativos[0]
-            cap_max = sku_ref["Capacidade_Max"]
-            cx_por_fileira = sku_ref["Caixas_Por_Fileira"]
-            max_fileiras = sku_ref["Quantidade_Fileiras"]
+    pallets_gerados = []
+    
+    # 1. Montagem de pallets completos (fechados ou mistos por numeração/fileira)
+    while any(i["Qtd_Disponivel"] > 0 for i in estoque_por_sku.values()):
+        skus_ativos = [i for i in estoque_por_sku.values() if i["Qtd_Disponivel"] > 0]
+        if not skus_ativos:
+            break
             
-            lote_pallet = []
-            fileira_atual = 0
-            
-            # Montar o pallet fileira por fileira sem ultrapassar a capacidade máxima
-            while fileira_atual < max_fileiras and any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
-                vagas_fileira = cx_por_fileira
-                while vagas_fileira > 0:
-                    com_saldo = [i for i in itens_grupo if i["Qtd_Disponivel"] > 0]
-                    if not com_saldo:
-                        break
-                    com_saldo.sort(key=lambda x: x["Qtd_Disponivel"], reverse=True)
-                    escolhido = com_saldo[0]
-                    
-                    pegar = min(vagas_fileira, escolhido["Qtd_Disponivel"])
-                    for _ in range(pegar):
-                        lote_pallet.append({
-                            "SKU": escolhido["SKU"],
-                            "Produto": escolhido["Produto"],
-                            "Nº Caixa": escolhido["Nº Caixa"],
-                            "Ordem_Caixa": escolhido["Ordem_Caixa"],
-                            "Pecas_Por_Caixa": escolhido["Pecas_Por_Caixa"],
-                            "Caixas_Por_Fileira": escolhido["Caixas_Por_Fileira"],
-                            "Quantidade_Fileiras": escolhido["Quantidade_Fileiras"],
-                            "Capacidade_Max": cap_max
-                        })
-                    escolhido["Qtd_Disponivel"] -= pegar
-                    vagas_fileira -= pegar
-                fileira_atual += 1
+        # Priorizar SKUs com maior estoque para iniciar o pallet
+        skus_ativos.sort(key=lambda x: x["Qtd_Disponivel"], reverse=True)
+        sku_ref = skus_ativos[0]
+        
+        cap_max = sku_ref["Capacidade_Max"]
+        cx_por_fileira = sku_ref["Caixas_Por_Fileira"]
+        max_fileiras = sku_ref["Quantidade_Fileiras"]
+        
+        lote_pallet = []
+        fileira_atual = 0
+        
+        # Preencher fileira por fileira respeitando a altura e capacidade máxima
+        while fileira_atual < max_fileiras and any(i["Qtd_Disponivel"] > 0 for i in estoque_por_sku.values()):
+            vagas_fileira = cx_por_fileira
+            while vagas_fileira > 0:
+                com_saldo = [i for i in estoque_por_sku.values() if i["Qtd_Disponivel"] > 0]
+                if not com_saldo:
+                    break
+                # Priorizar mesma numeração de caixa para manter a fileira uniforme ou complementar inteligentemente
+                com_saldo.sort(key=lambda x: (x["Nº Caixa"] == sku_ref["Nº Caixa"], x["Qtd_Disponivel"]), reverse=True)
+                escolhido = com_saldo[0]
                 
-            if not lote_pallet:
-                break
-                
-            total_cx_lote = len(lote_pallet)
+                pegar = min(vagas_fileira, escolhido["Qtd_Disponivel"])
+                for _ in range(pegar):
+                    lote_pallet.append({
+                        "SKU": escolhido["SKU"],
+                        "Produto": escolhido["Produto"],
+                        "Nº Caixa": escolhido["Nº Caixa"],
+                        "Ordem_Caixa": escolhido["Ordem_Caixa"],
+                        "Pecas_Por_Caixa": escolhido["Pecas_Por_Caixa"],
+                        "Caixas_Por_Fileira": escolhido["Caixas_Por_Fileira"],
+                        "Quantidade_Fileiras": escolhido["Quantidade_Fileiras"],
+                        "Capacidade_Max": cap_max
+                    })
+                escolhido["Qtd_Disponivel"] -= pegar
+                vagas_fileira -= pegar
+            fileira_atual += 1
             
-            # Se atingiu a capacidade máxima padrão ou fechou o lote disponível do grupo
-            if total_cx_lote >= cap_max or not any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
-                if total_cx_lote >= cap_max:
-                    pallets_fechados.append(lote_pallet)
-                else:
-                    sobras_totais.extend(lote_pallet)
-            else:
-                pallets_fechados.append(lote_pallet)
+        if not lote_pallet:
+            break
+            
+        pallets_gerados.append(lote_pallet)
 
-    pallets_gerados = list(pallets_fechados)
-
-    # Se houverem sobras, alocá-las exclusivamente no ÚLTIMO PALLET e ordenar por tamanho de caixa (maior embaixo, menor em cima)
-    if sobras_totais:
-        sobras_totais.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
-        pallets_gerados.append(sobras_totais)
-
-    # Consolidar estrutura final para exibição e relatórios
-    pallets_bruto = []
+    # Organização física e estrutural dos pallets gerados
+    pallets_formatados = []
     for idx, lote in enumerate(pallets_gerados, 1):
+        is_ultimo = (idx == len(pallets_gerados))
+        
+        # Se for o último pallet e houver mistura/sobras, garantir ordenação física (caixas maiores embaixo, menores em cima)
+        if is_ultimo and len(lote) < lote[0]["Capacidade_Max"]:
+            lote.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
+            tipo_p = "Pallet Final Fracionado (Otimizado por Fileiras) 🟠"
+        else:
+            # Verificar se é homogêneo ou misto
+            sku_unico = len(set(i["SKU"] for i in lote)) == 1
+            tipo_p = "Fechado 🟢" if sku_unico else "Misto Fechado (Mesma Família) 🟡"
+
         sku_counts = {}
         for item in lote:
             s = item["SKU"]
@@ -343,23 +330,16 @@ def processar_pallets_operador(carrinho, df_produtos):
             sku_counts[s]["Qtd Caixas"] += 1
             sku_counts[s]["Total Peças"] += item["Pecas_Por_Caixa"]
 
-        total_cx_lote = sum(i["Qtd Caixas"] for i in sku_counts.values())
-        
-        if idx == len(pallets_gerados) and len(pallets_gerados) > len(pallets_fechados):
-            tipo_p = "Pallet Final de Sobras (Misto Ordenado) 🟠"
-        else:
-            tipo_p = "Fechado 🟢" if len(sku_counts) == 1 else "Misto Fechado (Mesma Família) 🟡"
-
         pallet_label = f"Pallet {idx:02d}"
         for s_info in sku_counts.values():
-            pallets_bruto.append({
+            pallets_formatados.append({
                 "Pallet_Num": idx,
                 "ID": pallet_label,
                 "Tipo": tipo_p,
                 **s_info
             })
 
-    df_temp = pd.DataFrame(pallets_bruto)
+    df_temp = pd.DataFrame(pallets_formatados)
     if df_temp.empty:
         return df_temp
 
