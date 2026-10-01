@@ -229,27 +229,30 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO INTELIGENTE POR NUMERAÇÃO, FILEIRAS E ÚLTIMO PALLET CONSOLIDADO ---
+# --- 6. ALGORITMO HIERÁRQUICO POR TIPO DE CAIXA E ALTURA ---
 def processar_pallets_operador(carrinho, df_produtos):
-    # Agrupar itens estritamente por numeração de caixa (família)
-    grupos_por_num_caixa = {}
+    # Agrupar estritamente por Tipo de Caixa (Numeração) e Altura (Fileiras)
+    grupos_por_tipo_e_altura = {}
     
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
         num_cx = str(prod["NUMERO DA CAIXA"]).strip()
+        altura = int(prod["ALTURA"])
         
-        if num_cx not in grupos_por_num_caixa:
-            grupos_por_num_caixa[num_cx] = []
+        chave = (num_cx, altura)
+        
+        if chave not in grupos_por_tipo_e_altura:
+            grupos_por_tipo_e_altura[chave] = []
             
-        grupos_por_num_caixa[num_cx].append({
+        grupos_por_tipo_e_altura[chave].append({
             "SKU": sku,
             "Produto": prod["NOME DO PRODUTO"],
             "Nº Caixa": num_cx,
             "Ordem_Caixa": int(prod.get("Ordem_Caixa", 0)),
             "Pecas_Por_Caixa": int(prod["QUANTIDADE DE PEÇAS"]),
             "Caixas_Por_Fileira": int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"]),
-            "Quantidade_Fileiras": int(prod["ALTURA"]),
+            "Quantidade_Fileiras": altura,
             "Capacidade_Max": int(prod["QUANTIDADE DE CAIXAS NO PALLET"]),
             "Qtd_Disponivel": int(item["Qtd_Caixas"])
         })
@@ -257,8 +260,8 @@ def processar_pallets_operador(carrinho, df_produtos):
     pallets_fechados = []
     sobras_totais = []
 
-    # Processar cada numeração de caixa separadamente para garantir paletização homogênea
-    for num_cx, itens_grupo in grupos_por_num_caixa.items():
+    # Processar cada grupo unificado por Tipo de Caixa e Altura
+    for chave, itens_grupo in grupos_por_tipo_e_altura.items():
         while any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
             skus_ativos = [i for i in itens_grupo if i["Qtd_Disponivel"] > 0]
             if not skus_ativos:
@@ -272,7 +275,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             lote_pallet = []
             fileira_atual = 0
             
-            # Montar o pallet fileira por fileira sem ultrapassar a capacidade ou altura máxima
+            # Preencher fileira por fileira perfeitamente
             while fileira_atual < max_fileiras and any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
                 vagas_fileira = cx_por_fileira
                 while vagas_fileira > 0:
@@ -303,18 +306,16 @@ def processar_pallets_operador(carrinho, df_produtos):
                 
             total_cx_lote = len(lote_pallet)
             
-            # Se o lote formou um pallet cheio ou se não há mais itens no grupo que permitam fechar um completo
+            # Verificar se o pallet formou capacidade máxima ou se é sobra do grupo
             if total_cx_lote >= cap_max:
                 pallets_fechados.append(lote_pallet)
             else:
-                # Se sobrou menos que um pallet completo deste grupo, mandamos para as sobras inteligentes
                 sobras_totais.extend(lote_pallet)
 
     pallets_gerados = list(pallets_fechados)
 
-    # Tratamento inteligente do ÚLTIMO PALLET para as sobras acumuladas
+    # Tratamento das sobras inteligentes no ÚLTIMO PALLET (caixas maiores embaixo, menores em cima)
     if sobras_totais:
-        # Organizar as sobras estritamente com as caixas maiores embaixo (base) e menores em cima (topo)
         sobras_totais.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
         pallets_gerados.append(sobras_totais)
 
