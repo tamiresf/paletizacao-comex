@@ -229,9 +229,8 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO HIERÁRQUICO POR TIPO DE CAIXA E ALTURA ---
+# --- 6. ALGORITMO ESTRITO COM RESPEITO ABSOLUTO À CAPACIDADE MÁXIMA ---
 def processar_pallets_operador(carrinho, df_produtos):
-    # Agrupar estritamente por Tipo de Caixa (Numeração) e Altura (Fileiras)
     grupos_por_tipo_e_altura = {}
     
     for item in carrinho:
@@ -260,7 +259,6 @@ def processar_pallets_operador(carrinho, df_produtos):
     pallets_fechados = []
     sobras_totais = []
 
-    # Processar cada grupo unificado por Tipo de Caixa e Altura
     for chave, itens_grupo in grupos_por_tipo_e_altura.items():
         while any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
             skus_ativos = [i for i in itens_grupo if i["Qtd_Disponivel"] > 0]
@@ -275,17 +273,17 @@ def processar_pallets_operador(carrinho, df_produtos):
             lote_pallet = []
             fileira_atual = 0
             
-            # Preencher fileira por fileira perfeitamente
-            while fileira_atual < max_fileiras and any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
-                vagas_fileira = cx_por_fileira
-                while vagas_fileira > 0:
+            # TRAVA ESTREITA: O loop para estritamente se atingir a capacidade máxima ou o limite de fileiras
+            while fileira_atual < max_fileiras and len(lote_pallet) < cap_max and any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
+                vagas_fileira = min(cx_por_fileira, cap_max - len(lote_pallet))
+                while vagas_fileira > 0 and len(lote_pallet) < cap_max:
                     com_saldo = [i for i in itens_grupo if i["Qtd_Disponivel"] > 0]
                     if not com_saldo:
                         break
                     com_saldo.sort(key=lambda x: x["Qtd_Disponivel"], reverse=True)
                     escolhido = com_saldo[0]
                     
-                    pegar = min(vagas_fileira, escolhido["Qtd_Disponivel"])
+                    pegar = min(vagas_fileira, escolhido["Qtd_Disponivel"], cap_max - len(lote_pallet))
                     for _ in range(pegar):
                         lote_pallet.append({
                             "SKU": escolhido["SKU"],
@@ -306,7 +304,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                 
             total_cx_lote = len(lote_pallet)
             
-            # Verificar se o pallet formou capacidade máxima ou se é sobra do grupo
             if total_cx_lote >= cap_max:
                 pallets_fechados.append(lote_pallet)
             else:
@@ -314,10 +311,19 @@ def processar_pallets_operador(carrinho, df_produtos):
 
     pallets_gerados = list(pallets_fechados)
 
-    # Tratamento das sobras inteligentes no ÚLTIMO PALLET (caixas maiores embaixo, menores em cima)
+    # Tratamento rígido e inteligente do ÚLTIMO PALLET para as sobras (respeitando capacidade máxima e ordenação física)
     if sobras_totais:
-        sobras_totais.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
-        pallets_gerados.append(sobras_totais)
+        # Se as sobras ultrapassarem a capacidade máxima de um pallet padrão, fracionamos o último pallet respeitando o limite
+        cap_max_padrao = sobras_totais[0]["Capacidade_Max"] if sobras_totais else 32
+        while len(sobras_totais) > cap_max_padrao:
+            lote_parcial = sobras_totais[:cap_max_padrao]
+            sobras_totais = sobras_totais[cap_max_padrao:]
+            lote_parcial.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
+            pallets_gerados.append(lote_parcial)
+            
+        if sobras_totais:
+            sobras_totais.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
+            pallets_gerados.append(sobras_totais)
 
     # Consolidar estrutura final para exibição e relatórios
     pallets_bruto = []
