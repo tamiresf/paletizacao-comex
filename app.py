@@ -229,7 +229,7 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO COMEX COM PALLETS FECHADOS E ÚLTIMO FRACIONADO ---
+# --- 6. ALGORITMO COMEX ESTRITO (AGRUPAMENTO POR NUMERAÇÃO, APENAS O ÚLTIMO MISTO) ---
 def processar_pallets_operador(carrinho, df_produtos):
     estoque_por_sku = {}
     for item in carrinho:
@@ -249,7 +249,7 @@ def processar_pallets_operador(carrinho, df_produtos):
 
     pallets_gerados = []
 
-    # ETAPA 1: Fechar pallets completos com capacidade máxima (1 SKU por vez para garantir pallet fechado e homogêneo)
+    # ETAPA 1: Fechar pallets completos apenas com SKUs da mesma numeração de caixa (capacidade máxima)
     continuar = True
     while continuar:
         continuar = False
@@ -275,41 +275,41 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_gerados.append(lote_pallet)
             continuar = True
 
-    # ETAPA 2: Montar pallets fechados completando fileiras exatas com o SKU que restou até atingir a capacidade máxima do pallet
-    continuar = True
-    while continuar:
-        continuar = False
-        skus_com_fileira = [s for s in estoque_por_sku.values() if s["Qtd_Disponivel"] >= s["Caixas_Por_Fileira"]]
-        if skus_com_fileira:
-            skus_com_fileira.sort(key=lambda x: x["Qtd_Disponivel"], reverse=True)
-            ref = skus_com_fileira[0]
+    # ETAPA 2: Montar pallets fechados combinando SKUs da MESMA NUMERAÇÃO de caixa até atingir a capacidade máxima
+    num_caixas_distintas = set(s["Nº Caixa"] for s in estoque_por_sku.values() if s["Qtd_Disponivel"] > 0)
+    for nc in num_caixas_distintas:
+        continuar = True
+        while continuar:
+            continuar = False
+            grupo_nc = [s for s in estoque_por_sku.values() if s["Nº Caixa"] == nc and s["Qtd_Disponivel"] > 0]
+            if not grupo_nc:
+                break
             
-            cap_max = ref["Capacidade_Max"]
-            cx_fileira = ref["Caixas_Por_Fileira"]
-            max_alt = ref["Quantidade_Fileiras"]
+            ref_grupo = grupo_nc[0]
+            cap_max = ref_grupo["Capacidade_Max"]
             
-            lote_pallet = []
-            # Tentar formar um pallet fechado acumulando fileiras inteiras do mesmo SKU até a capacidade máxima
-            while ref["Qtd_Disponivel"] >= cx_fileira and len(lote_pallet) + cx_fileira <= cap_max and (len(lote_pallet) // cx_fileira) < max_alt:
-                for _ in range(cx_fileira):
-                    lote_pallet.append({
-                        "SKU": ref["SKU"],
-                        "Produto": ref["Produto"],
-                        "Nº Caixa": ref["Nº Caixa"],
-                        "Ordem_Caixa": ref["Ordem_Caixa"],
-                        "Pecas_Por_Caixa": ref["Pecas_Por_Caixa"],
-                        "Caixas_Por_Fileira": ref["Caixas_Por_Fileira"],
-                        "Quantidade_Fileiras": ref["Quantidade_Fileiras"],
-                        "Capacidade_Max": cap_max
-                    })
-                    ref["Qtd_Disponivel"] -= 1
-                    
-            # Se formou um pallet fechado (com capacidade máxima ou o máximo possível de fileiras daquele lote), adiciona
-            if len(lote_pallet) >= cap_max or (ref["Qtd_Disponivel"] < cx_fileira and len(lote_pallet) >= cap_max * 0.7):
-                pallets_gerados.append(lote_pallet)
-                continuar = True
+            # Verificar se a soma total das sobras deste número de caixa atinge a capacidade máxima de um pallet
+            soma_grupo = sum(s["Qtd_Disponivel"] for s in grupo_nc)
+            if soma_grupo >= cap_max:
+                lote_pallet = []
+                for s in grupo_nc:
+                    while s["Qtd_Disponivel"] > 0 and len(lote_pallet) < cap_max:
+                        lote_pallet.append({
+                            "SKU": s["SKU"],
+                            "Produto": s["Produto"],
+                            "Nº Caixa": s["Nº Caixa"],
+                            "Ordem_Caixa": s["Ordem_Caixa"],
+                            "Pecas_Por_Caixa": s["Pecas_Por_Caixa"],
+                            "Caixas_Por_Fileira": s["Caixas_Por_Fileira"],
+                            "Quantidade_Fileiras": s["Quantidade_Fileiras"],
+                            "Capacidade_Max": cap_max
+                        })
+                        s["Qtd_Disponivel"] -= 1
+                if len(lote_pallet) == cap_max:
+                    pallets_gerados.append(lote_pallet)
+                    continuar = True
 
-    # ETAPA 3: Coletar sobras finais e alocar no ÚLTIMO PALLET (único permitido ser fracionado)
+    # ETAPA 3: Coletar absolutamente todas as sobras restantes e unificar exclusivamente no ÚLTIMO PALLET (permitido misturar)
     sobras_finais = []
     for s in estoque_por_sku.values():
         if s["Qtd_Disponivel"] > 0:
@@ -335,6 +335,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_gerados.append(lote_parcial)
             
         if sobras_finais:
+            # Organizar o último pallet misto com caixas maiores embaixo e sobras no topo
             sobras_finais.sort(key=lambda x: (x["Ordem_Caixa"], x["Caixas_Por_Fileira"]), reverse=True)
             pallets_gerados.append(sobras_finais)
 
@@ -362,9 +363,9 @@ def processar_pallets_operador(carrinho, df_produtos):
         is_ultimo = (idx == len(pallets_gerados) and len(lote) < lote[0]["Capacidade_Max"])
         
         if is_ultimo:
-            tipo_p = "Pallet Final Fracionado (Otimizado) 🟠"
+            tipo_p = "Pallet Final Misto (Sobras de Numerações) 🟠"
         else:
-            tipo_p = "Pallet Fechado 🟢"
+            tipo_p = "Pallet Fechado Homogêneo 🟢"
 
         pallet_label = f"Pallet {idx:02d}"
         for s_info in sku_counts.values():
@@ -534,7 +535,7 @@ if st.session_state.processado and st.session_state.carrinho:
             expanded=True,
         ):
             st.markdown(
-                "**Composição detalhada (organizada da base para o topo - pallets fechados e último fracionado):**"
+                "**Composição detalhada (organizada da base para o topo - estritamente mesma numeração nos fechados, misto apenas no último):**"
             )
             st.dataframe(
                 df_p[[
