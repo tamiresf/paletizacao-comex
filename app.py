@@ -229,10 +229,10 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO ESTRITO COM RESPEITO ABSOLUTO À CAPACIDADE MÁXIMA ---
+# --- 6. ALGORITMO COMEX INTELIGENTE (FILEIRAS EMBAIXO, SOBRAS NO TOPO) ---
 def processar_pallets_operador(carrinho, df_produtos):
     grupos_por_tipo_e_altura = {}
-    
+
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
@@ -240,7 +240,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         altura = int(prod["ALTURA"])
         
         chave = (num_cx, altura)
-        
         if chave not in grupos_por_tipo_e_altura:
             grupos_por_tipo_e_altura[chave] = []
             
@@ -273,7 +272,6 @@ def processar_pallets_operador(carrinho, df_produtos):
             lote_pallet = []
             fileira_atual = 0
             
-            # TRAVA ESTREITA: O loop para estritamente se atingir a capacidade máxima ou o limite de fileiras
             while fileira_atual < max_fileiras and len(lote_pallet) < cap_max and any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
                 vagas_fileira = min(cx_por_fileira, cap_max - len(lote_pallet))
                 while vagas_fileira > 0 and len(lote_pallet) < cap_max:
@@ -303,7 +301,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                 break
                 
             total_cx_lote = len(lote_pallet)
-            
             if total_cx_lote >= cap_max:
                 pallets_fechados.append(lote_pallet)
             else:
@@ -311,21 +308,22 @@ def processar_pallets_operador(carrinho, df_produtos):
 
     pallets_gerados = list(pallets_fechados)
 
-    # Tratamento rígido e inteligente do ÚLTIMO PALLET para as sobras (respeitando capacidade máxima e ordenação física)
+    # Tratamento do último pallet: priorizar fileiras completas embaixo e sobras soltas no topo
     if sobras_totais:
-        # Se as sobras ultrapassarem a capacidade máxima de um pallet padrão, fracionamos o último pallet respeitando o limite
         cap_max_padrao = sobras_totais[0]["Capacidade_Max"] if sobras_totais else 32
         while len(sobras_totais) > cap_max_padrao:
             lote_parcial = sobras_totais[:cap_max_padrao]
             sobras_totais = sobras_totais[cap_max_padrao:]
-            lote_parcial.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
+            
+            # Organizar fileiras completas embaixo, sobras no topo
+            lote_parcial.sort(key=lambda x: (x["Ordem_Caixa"], x["Qtd_Disponivel"] if "Qtd_Disponivel" in x else 0), reverse=True)
             pallets_gerados.append(lote_parcial)
             
         if sobras_totais:
+            # Organizar o último pallet fracionado mantendo caixas maiores embaixo e fileiras completas estruturadas
             sobras_totais.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
             pallets_gerados.append(sobras_totais)
 
-    # Consolidar estrutura final para exibição e relatórios
     pallets_bruto = []
     for idx, lote in enumerate(pallets_gerados, 1):
         sku_counts = {}
@@ -348,7 +346,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         total_cx_lote = sum(i["Qtd Caixas"] for i in sku_counts.values())
         
         if idx == len(pallets_gerados) and len(pallets_gerados) > len(pallets_fechados):
-            tipo_p = "Pallet Final Inteligente (Misto Ordenado) 🟠"
+            tipo_p = "Pallet Final Inteligente (Fileiras Base / Sobras Topo) 🟠"
         else:
             tipo_p = "Fechado 🟢" if len(sku_counts) == 1 else "Misto Fechado (Mesma Família) 🟡"
 
@@ -520,7 +518,7 @@ if st.session_state.processado and st.session_state.carrinho:
             expanded=True,
         ):
             st.markdown(
-                "**Composição detalhada (organizada da base para o topo - caixas maiores embaixo, respeitando fileiras):**"
+                "**Composição detalhada (organizada da base para o topo - caixas maiores embaixo, fileiras completas em baixo e sobras no topo):**"
             )
             st.dataframe(
                 df_p[[
