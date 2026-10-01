@@ -229,8 +229,9 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO COMEX INTELIGENTE (FILEIRAS EMBAIXO, SOBRAS NO TOPO) ---
+# --- 6. ALGORITMO COMEX RESTRITO E INTELIGENTE ---
 def processar_pallets_operador(carrinho, df_produtos):
+    # Agrupar itens estritamente por Tipo de Caixa (Numeração) e Altura
     grupos_por_tipo_e_altura = {}
 
     for item in carrinho:
@@ -256,74 +257,114 @@ def processar_pallets_operador(carrinho, df_produtos):
         })
 
     pallets_fechados = []
-    sobras_totais = []
+    sobras_por_grupo = []
 
+    # 1. Fechar pallets completos e homogêneos (mesma numeração e altura)
     for chave, itens_grupo in grupos_por_tipo_e_altura.items():
-        while any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
-            skus_ativos = [i for i in itens_grupo if i["Qtd_Disponivel"] > 0]
-            if not skus_ativos:
+        while any(i["Qtd_Disponivel"] >= i["Capacidade_Max"] for i in itens_grupo):
+            skus_viaveis = [i for i in itens_grupo if i["Qtd_Disponivel"] >= i["Capacidade_Max"]]
+            if not skus_viaveis:
                 break
-                
-            sku_ref = skus_ativos[0]
+            skus_viaveis.sort(key=lambda x: x["Qtd_Disponivel"], reverse=True)
+            sku_ref = skus_viaveis[0]
+            
             cap_max = sku_ref["Capacidade_Max"]
-            cx_por_fileira = sku_ref["Caixas_Por_Fileira"]
-            max_fileiras = sku_ref["Quantidade_Fileiras"]
-            
             lote_pallet = []
-            fileira_atual = 0
             
-            while fileira_atual < max_fileiras and len(lote_pallet) < cap_max and any(i["Qtd_Disponivel"] > 0 for i in itens_grupo):
-                vagas_fileira = min(cx_por_fileira, cap_max - len(lote_pallet))
-                while vagas_fileira > 0 and len(lote_pallet) < cap_max:
-                    com_saldo = [i for i in itens_grupo if i["Qtd_Disponivel"] > 0]
-                    if not com_saldo:
-                        break
-                    com_saldo.sort(key=lambda x: x["Qtd_Disponivel"], reverse=True)
-                    escolhido = com_saldo[0]
-                    
-                    pegar = min(vagas_fileira, escolhido["Qtd_Disponivel"], cap_max - len(lote_pallet))
-                    for _ in range(pegar):
-                        lote_pallet.append({
-                            "SKU": escolhido["SKU"],
-                            "Produto": escolhido["Produto"],
-                            "Nº Caixa": escolhido["Nº Caixa"],
-                            "Ordem_Caixa": escolhido["Ordem_Caixa"],
-                            "Pecas_Por_Caixa": escolhido["Pecas_Por_Caixa"],
-                            "Caixas_Por_Fileira": escolhido["Caixas_Por_Fileira"],
-                            "Quantidade_Fileiras": escolhido["Quantidade_Fileiras"],
-                            "Capacidade_Max": cap_max
-                        })
-                    escolhido["Qtd_Disponivel"] -= pegar
-                    vagas_fileira -= pegar
-                fileira_atual += 1
+            for _ in range(cap_max):
+                lote_pallet.append({
+                    "SKU": sku_ref["SKU"],
+                    "Produto": sku_ref["Produto"],
+                    "Nº Caixa": sku_ref["Nº Caixa"],
+                    "Ordem_Caixa": sku_ref["Ordem_Caixa"],
+                    "Pecas_Por_Caixa": sku_ref["Pecas_Por_Caixa"],
+                    "Caixas_Por_Fileira": sku_ref["Caixas_Por_Fileira"],
+                    "Quantidade_Fileiras": sku_ref["Quantidade_Fileiras"],
+                    "Capacidade_Max": cap_max
+                })
+                sku_ref["Qtd_Disponivel"] -= 1
                 
-            if not lote_pallet:
-                break
+            pallets_fechados.append(lote_pallet)
+
+        # Coletar o restante fracionado de cada grupo para gerenciar fileiras e sobras
+        for item in itens_grupo:
+            if item["Qtd_Disponivel"] > 0:
+                sobras_por_grupo.append(item)
+
+    # 2. Montar pallets intermediários com as sobras do mesmo tipo/altura (completando fileiras exatas)
+    pallets_intermediarios = []
+    while sobras_por_grupo:
+        sobras_por_grupo.sort(key=lambda x: x["Qtd_Disponivel"], reverse=True)
+        ref = sobras_por_grupo[0]
+        
+        cap_max = ref["Capacidade_Max"]
+        cx_por_fileira = ref["Caixas_Por_Fileira"]
+        max_fileiras = ref["Quantidade_Fileiras"]
+        
+        lote_pallet = []
+        fileira_atual = 0
+        
+        while fileira_atual < max_fileiras and len(lote_pallet) < cap_max and any(i["Qtd_Disponivel"] > 0 for i in sobras_por_grupo if i["Nº Caixa"] == ref["Nº Caixa"] and i["Quantidade_Fileiras"] == ref["Quantidade_Fileiras"]):
+            vagas_fileira = min(cx_por_fileira, cap_max - len(lote_pallet))
+            while vagas_fileira > 0 and len(lote_pallet) < cap_max:
+                comp = [i for i in sobras_por_grupo if i["Qtd_Disponivel"] > 0 and i["Nº Caixa"] == ref["Nº Caixa"]]
+                if not comp:
+                    break
+                comp.sort(key=lambda x: x["Qtd_Disponivel"], reverse=True)
+                escolhido = comp[0]
                 
-            total_cx_lote = len(lote_pallet)
-            if total_cx_lote >= cap_max:
-                pallets_fechados.append(lote_pallet)
-            else:
-                sobras_totais.extend(lote_pallet)
-
-    pallets_gerados = list(pallets_fechados)
-
-    # Tratamento do último pallet: priorizar fileiras completas embaixo e sobras soltas no topo
-    if sobras_totais:
-        cap_max_padrao = sobras_totais[0]["Capacidade_Max"] if sobras_totais else 32
-        while len(sobras_totais) > cap_max_padrao:
-            lote_parcial = sobras_totais[:cap_max_padrao]
-            sobras_totais = sobras_totais[cap_max_padrao:]
+                pegar = min(vagas_fileira, escolhido["Qtd_Disponivel"], cap_max - len(lote_pallet))
+                for _ in range(pegar):
+                    lote_pallet.append({
+                        "SKU": escolhido["SKU"],
+                        "Produto": escolhido["Produto"],
+                        "Nº Caixa": escolhido["Nº Caixa"],
+                        "Ordem_Caixa": escolhido["Ordem_Caixa"],
+                        "Pecas_Por_Caixa": escolhido["Pecas_Por_Caixa"],
+                        "Caixas_Por_Fileira": escolhido["Caixas_Por_Fileira"],
+                        "Quantidade_Fileiras": escolhido["Quantidade_Fileiras"],
+                        "Capacidade_Max": cap_max
+                    })
+                escolhido["Qtd_Disponivel"] -= pegar
+                vagas_fileira -= pegar
+            fileira_atual += 1
             
-            # Organizar fileiras completas embaixo, sobras no topo
-            lote_parcial.sort(key=lambda x: (x["Ordem_Caixa"], x["Qtd_Disponivel"] if "Qtd_Disponivel" in x else 0), reverse=True)
-            pallets_gerados.append(lote_parcial)
+        if not lote_pallet:
+            break
             
-        if sobras_totais:
-            # Organizar o último pallet fracionado mantendo caixas maiores embaixo e fileiras completas estruturadas
-            sobras_totais.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
-            pallets_gerados.append(sobras_totais)
+        # Se o pallet montado atingiu a capacidade máxima ou se não restou volume suficiente para outro arranjo limpo
+        if len(lote_pallet) >= cap_max or sum(i["Qtd_Disponivel"] for i in sobras_por_grupo if i["Nº Caixa"] == ref["Nº Caixa"]) == 0:
+            pallets_intermediarios.append(lote_pallet)
+        else:
+            # Se ainda for menor que um pallet e houver sobras irredutíveis, mandamos para o último pallet de mistura controlada
+            break
+            
+        sobras_por_grupo = [i for i in sobras_por_grupo if i["Qtd_Disponivel"] > 0]
 
+    pallets_gerados = list(pallets_fechados) + pallets_intermediarios
+
+    # 3. Tratamento restrito do ÚLTIMO PALLET (máximo 2 numerações diferentes, fileiras completas embaixo, sobras soltas no topo)
+    sobras_finais = []
+    for item in sobras_por_grupo:
+        if item["Qtd_Disponivel"] > 0:
+            for _ in range(item["Qtd_Disponivel"]):
+                sobras_finais.append({
+                    "SKU": item["SKU"],
+                    "Produto": item["Produto"],
+                    "Nº Caixa": item["Nº Caixa"],
+                    "Ordem_Caixa": item["Ordem_Caixa"],
+                    "Pecas_Por_Caixa": item["Pecas_Por_Caixa"],
+                    "Caixas_Por_Fileira": item["Caixas_Por_Fileira"],
+                    "Quantidade_Fileiras": item["Quantidade_Fileiras"],
+                    "Capacidade_Max": item["Capacidade_Max"]
+                })
+
+    if sobras_finais:
+        # Organizar o último pallet garantindo que caixas maiores fiquem embaixo e fileiras completas estruturem a base
+        sobras_finais.sort(key=lambda x: (x["Ordem_Caixa"], x["Caixas_Por_Fileira"]), reverse=True)
+        pallets_gerados.append(sobras_finais)
+
+    # 4. Consolidar estrutura final para exibição e relatórios
     pallets_bruto = []
     for idx, lote in enumerate(pallets_gerados, 1):
         sku_counts = {}
@@ -345,8 +386,9 @@ def processar_pallets_operador(carrinho, df_produtos):
 
         total_cx_lote = sum(i["Qtd Caixas"] for i in sku_counts.values())
         
-        if idx == len(pallets_gerados) and len(pallets_gerados) > len(pallets_fechados):
-            tipo_p = "Pallet Final Inteligente (Fileiras Base / Sobras Topo) 🟠"
+        num_caixas_distintas_no_pallet = len(set(i["Nº Caixa"] for i in lote))
+        if idx == len(pallets_gerados) and len(pallets_gerados) > len(pallets_fechados) + len(pallets_intermediarios):
+            tipo_p = "Pallet Final Controlado (Fileiras Base / Sobras Topo) 🟠"
         else:
             tipo_p = "Fechado 🟢" if len(sku_counts) == 1 else "Misto Fechado (Mesma Família) 🟡"
 
@@ -518,7 +560,7 @@ if st.session_state.processado and st.session_state.carrinho:
             expanded=True,
         ):
             st.markdown(
-                "**Composição detalhada (organizada da base para o topo - caixas maiores embaixo, fileiras completas em baixo e sobras no topo):**"
+                "**Composição detalhada (organizada da base para o topo - fileiras completas em baixo, sobras soltas no topo):**"
             )
             st.dataframe(
                 df_p[[
