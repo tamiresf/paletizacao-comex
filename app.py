@@ -288,7 +288,6 @@ def processar_pallets_operador(carrinho, df_produtos):
             ref_grupo = grupo_nc[0]
             cap_max = ref_grupo["Capacidade_Max"]
             
-            # Verificar se a soma total das sobras deste número de caixa atinge a capacidade máxima de um pallet
             soma_grupo = sum(s["Qtd_Disponivel"] for s in grupo_nc)
             if soma_grupo >= cap_max:
                 lote_pallet = []
@@ -309,7 +308,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                     pallets_gerados.append(lote_pallet)
                     continuar = True
 
-    # ETAPA 3: Coletar absolutamente todas as sobras restantes e unificar exclusivamente no ÚLTIMO PALLET (permitido misturar)
+    # ETAPA 3: Coletar absolutamente todas as sobras restantes e unificar exclusivamente no ÚLTIMO PALLET
     sobras_finais = []
     for s in estoque_por_sku.values():
         if s["Qtd_Disponivel"] > 0:
@@ -335,7 +334,6 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_gerados.append(lote_parcial)
             
         if sobras_finais:
-            # Organizar o último pallet misto com caixas maiores embaixo e sobras no topo
             sobras_finais.sort(key=lambda x: (x["Ordem_Caixa"], x["Caixas_Por_Fileira"]), reverse=True)
             pallets_gerados.append(sobras_finais)
 
@@ -403,7 +401,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     return df_consolidado
 
 
-# --- 7. GERADOR DE PDF ---
+# --- 7. GERADOR DE PDF COM CONTROLE DE QUEBRA DE PÁGINA ---
 def gerar_pdf(df_pallets, cliente, data_str):
     pdf = FPDF()
     pdf.add_page()
@@ -432,6 +430,13 @@ def gerar_pdf(df_pallets, cliente, data_str):
         )
         total_cx = int(df_p["Qtd Caixas"].sum())
         total_pecas = int(df_p["Total Peças"].sum())
+
+        # Cálculo da altura estimada do bloco para evitar que o cabeçalho quebre isolado
+        linhas_tabela = len(df_p)
+        altura_bloco = 20 + (linhas_tabela + 1) * 6
+
+        if pdf.get_y() + altura_bloco > 270:
+            pdf.add_page()
 
         pdf.set_font("Helvetica", "B", 11)
         pdf.cell(
