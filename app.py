@@ -229,7 +229,7 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO COMEX ESTRITO (AGRUPAMENTO POR NUMERAÇÃO, APENAS O ÚLTIMO MISTO) ---
+# --- 6. ALGORITMO COMEX COM CONSOLIDAÇÃO INTELIGENTE DE SOBRAS FINAIS ---
 def processar_pallets_operador(carrinho, df_produtos):
     estoque_por_sku = {}
     for item in carrinho:
@@ -308,7 +308,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                     pallets_gerados.append(lote_pallet)
                     continuar = True
 
-    # ETAPA 3: Coletar absolutamente todas as sobras restantes e unificar exclusivamente no ÚLTIMO PALLET
+    # ETAPA 3: Tratamento Inteligente e Consolidado das Sobras Finais (Otimização para os Dois Últimos Pallets)
     sobras_finais = []
     for s in estoque_por_sku.values():
         if s["Qtd_Disponivel"] > 0:
@@ -327,13 +327,21 @@ def processar_pallets_operador(carrinho, df_produtos):
 
     if sobras_finais:
         cap_max_padrao = sobras_finais[0]["Capacidade_Max"] if sobras_finais else 32
-        while len(sobras_finais) > cap_max_padrao:
-            lote_parcial = sobras_finais[:cap_max_padrao]
-            sobras_finais = sobras_finais[cap_max_padrao:]
-            lote_parcial.sort(key=lambda x: (x["Ordem_Caixa"], x["Caixas_Por_Fileira"]), reverse=True)
-            pallets_gerados.append(lote_parcial)
+        
+        # Ordenar sobras priorizando a numeração de caixa decrescente (caixas maiores embaixo)
+        sobras_finais.sort(key=lambda x: (x["Ordem_Caixa"], x["Caixas_Por_Fileira"]), reverse=True)
+        
+        # Se as sobras excedem um pallet padrão, dividimos de forma coesa entre o penúltimo e o último pallet
+        if len(sobras_finais) > cap_max_padrao:
+            lote_penultimo = sobras_finais[:cap_max_padrao]
+            lote_ultimo = sobras_finais[cap_max_padrao:]
             
-        if sobras_finais:
+            lote_penultimo.sort(key=lambda x: (x["Ordem_Caixa"], x["Caixas_Por_Fileira"]), reverse=True)
+            lote_ultimo.sort(key=lambda x: (x["Ordem_Caixa"], x["Caixas_Por_Fileira"]), reverse=True)
+            
+            pallets_gerados.append(lote_penultimo)
+            pallets_gerados.append(lote_ultimo)
+        else:
             sobras_finais.sort(key=lambda x: (x["Ordem_Caixa"], x["Caixas_Por_Fileira"]), reverse=True)
             pallets_gerados.append(sobras_finais)
 
@@ -360,8 +368,8 @@ def processar_pallets_operador(carrinho, df_produtos):
         total_cx_lote = sum(i["Qtd Caixas"] for i in sku_counts.values())
         is_ultimo = (idx == len(pallets_gerados) and len(lote) < lote[0]["Capacidade_Max"])
         
-        if is_ultimo:
-            tipo_p = "Pallet Final Misto (Sobras de Numerações) 🟠"
+        if is_ultimo or idx >= len(pallets_gerados) - 1:
+            tipo_p = "Pallet Final Otimizado (Agrupado por Numeração) 🟠"
         else:
             tipo_p = "Pallet Fechado Homogêneo 🟢"
 
@@ -431,7 +439,6 @@ def gerar_pdf(df_pallets, cliente, data_str):
         total_cx = int(df_p["Qtd Caixas"].sum())
         total_pecas = int(df_p["Total Peças"].sum())
 
-        # Cálculo da altura estimada do bloco para evitar que o cabeçalho quebre isolado
         linhas_tabela = len(df_p)
         altura_bloco = 20 + (linhas_tabela + 1) * 6
 
@@ -540,7 +547,7 @@ if st.session_state.processado and st.session_state.carrinho:
             expanded=True,
         ):
             st.markdown(
-                "**Composição detalhada (organizada da base para o topo - estritamente mesma numeração nos fechados, misto apenas no último):**"
+                "**Composição detalhada (organizada da base para o topo - consolidação inteligente nos últimos pallets):**"
             )
             st.dataframe(
                 df_p[[
