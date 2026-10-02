@@ -230,6 +230,7 @@ st.markdown("---")
 
 
 # --- 6. ALGORITMO COMEX COM FILEIRAS INTEIRAS E RESTRIÇÃO DE BURACOS ---
+# --- 6. ALGORITMO COMEX COM FILEIRAS INTEIRAS E RESTRIÇÃO DE BURACOS ---
 def processar_pallets_operador(carrinho, df_produtos):
     estoque_por_sku = {}
     for item in carrinho:
@@ -275,15 +276,17 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_gerados.append(lote_pallet)
             continuar = True
 
-    # ETAPA 2: Montar pallets fechados usando APENAS múltiplos exatos de fileiras inteiras (evitando buracos)
+    # ETAPA 2: Montar pallets fechados usando APENAS múltiplos exatos da fileira (Caixas_Por_Fileira)
+    # Isso impede que fiquem "buracos" com quantidades quebradas em pallets intermediários.
     continuar = True
     while continuar:
         continuar = False
         for s in estoque_por_sku.values():
             cx_fileira = s["Caixas_Por_Fileira"]
             cap_max = s["Capacidade_Max"]
-            
+            # Se o SKU tiver quantidade suficiente para preencher fileiras completas que somem a capacidade do pallet ou blocos de fileiras
             if s["Qtd_Disponivel"] >= cx_fileira:
+                # Quantas caixas podemos tirar em múltiplos exatos da fileira sem quebrar?
                 lote_pallet = []
                 while s["Qtd_Disponivel"] >= cx_fileira and len(lote_pallet) + cx_fileira <= cap_max:
                     for _ in range(cx_fileira):
@@ -302,7 +305,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 if len(lote_pallet) == cap_max:
                     pallets_gerados.append(lote_pallet)
 
-    # ETAPA 3: Coletar sobras restantes que não formaram fileiras completas e alocar exclusivamente no ÚLTIMO PALLET
+    # ETAPA 3: Coletar todas as sobras restantes que não formaram fileiras completas e alocar no ÚLTIMO PALLET
     sobras_finais = []
     for s in estoque_por_sku.values():
         if s["Qtd_Disponivel"] > 0:
@@ -322,7 +325,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     if sobras_finais:
         cap_max_padrao = sobras_finais[0]["Capacidade_Max"] if sobras_finais else 32
         
-        # Ordenar sobras estritamente de baixo para o topo (caixas maiores embaixo, sobras no topo)
+        # Agrupar e ordenar as sobras estritamente de baixo para topo (caixas maiores embaixo, sobras fracionadas no topo)
         sobras_finais.sort(key=lambda x: (x["Ordem_Caixa"], x["Caixas_Por_Fileira"]), reverse=True)
         
         while len(sobras_finais) > cap_max_padrao:
