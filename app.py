@@ -200,7 +200,7 @@ if st.session_state.carrinho:
         c5.write(f"**Total Peças:** {total_pecas_item:,}".replace(",", "."))
 
         if c6.button(
-            "🗑️", key=f"remover_{index}_{item['SKU']}", help="Remover item"
+            "🗑️", key=f"remover_{index}_{item['SKU']}", help="Respeitar item"
         ):
             st.session_state.carrinho.pop(index)
             st.session_state.processado = False
@@ -275,7 +275,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_gerados.append(lote_pallet)
             continuar = True
 
-    # ETAPA 2: Fechar pallets intermediários/penúltimos usando APENAS fileiras completas
+    # ETAPA 2: Fechar pallets intermediários usando APENAS fileiras completas
     continuar = True
     while continuar:
         continuar = False
@@ -309,7 +309,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_gerados.append(lote_pallet)
             continuar = True
 
-    # ETAPA 3: Formar fileiras fechadas isoladas por numeração de caixa com as sobras (respeitando capacidade máxima do pallet)
+    # ETAPA 3: Formar fileiras fechadas isoladas por numeração de caixa com as sobras (respeitando a capacidade máxima do pallet)
     skus_sobra_lista = list(estoque_por_sku.values())
     skus_sobra_lista.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
 
@@ -336,7 +336,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             else:
                 break
 
-    # ETAPA 4: Recolher as sobras finais (que não completam fileiras) e agrupar no(s) último(s) pallet(s) respeitando a capacidade máxima
+    # ETAPA 4: Recolher as sobras finais que NÃO formaram fileira completa e enviá-las para o último pallet fracionado
     sobras_finais = []
     for s in estoque_por_sku.values():
         if s["Qtd_Disponivel"] > 0:
@@ -357,6 +357,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         cap_max_padrao = sobras_finais[0]["Capacidade_Max"] if sobras_finais else 32
         sobras_finais.sort(key=lambda x: (x["Ordem_Caixa"], x["SKU"]), reverse=True)
         
+        # Caso as sobras finais ultrapassem a capacidade máxima de um único pallet, divide respeitando o limite
         while len(sobras_finais) > cap_max_padrao:
             lote_parcial = sobras_finais[:cap_max_padrao]
             sobras_finais = sobras_finais[cap_max_padrao:]
