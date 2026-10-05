@@ -1,5 +1,6 @@
 from datetime import datetime
 from fractions import Fraction
+import math
 import os
 import re
 import pandas as pd
@@ -12,6 +13,12 @@ try:
     FPDF_DISPONIVEL = True
 except ImportError:
     FPDF_DISPONIVEL = False
+
+# --- REGRAS DE NEGÓCIO ---
+# Caixas por fileira é regra do TIPO de caixa (vale para todos os SKUs daquele número).
+CAIXAS_POR_FILEIRA_PADRAO = {0: 25, 1: 20, 2: 16, 3: 12}
+# Para não criar "buracos": no máximo 1 fileira incompleta por pallet (sempre no topo).
+MAX_FILEIRAS_INCOMPLETAS_POR_PALLET = 1
 
 # --- 1. CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(
@@ -103,6 +110,23 @@ try:
 except Exception as e:
     st.error(f"Erro ao carregar a base de dados ({CAMINHO_EXCEL}): {e}")
     st.stop()
+
+_div = df_produtos[
+    df_produtos.apply(
+        lambda r: r["Ordem_Caixa"] in CAIXAS_POR_FILEIRA_PADRAO
+        and r["QUANTIDADE DE CAIXAS POR FILEIRA"]
+        != CAIXAS_POR_FILEIRA_PADRAO[r["Ordem_Caixa"]],
+        axis=1,
+    )
+]
+if not _div.empty:
+    with st.expander(
+        f"⚠️ {len(_div)} SKU(s) com 'Caixas por fileira' diferente do padrão da caixa "
+        "(o sistema usa o padrão)"
+    ):
+        _tab = _div[["SKU", "NOME DO PRODUTO", "NUMERO DA CAIXA", "QUANTIDADE DE CAIXAS POR FILEIRA"]].copy()
+        _tab["PADRÃO DO SISTEMA"] = _div["Ordem_Caixa"].map(CAIXAS_POR_FILEIRA_PADRAO)
+        st.dataframe(_tab, use_container_width=True)
 
 # --- 3. ESTADO DA SESSÃO ---
 if "carrinho" not in st.session_state:
@@ -236,18 +260,96 @@ TIPO_FINAL_COMPLETO = "Pallet Final (Fileiras Completas) 🟡"
 TIPO_FINAL_INCOMPLETO = "Pallet Final com Fileira Incompleta no Topo 🟠"
 
 
+def empacotar_fileiras(itens, max_incompletas):
+    """Distribui fileiras (itens) em pallets usando o MENOR número de pallets.
+    Cada item: {"peso": Fraction (fração do pallet que a fileira ocupa), "incompleta": bool, ...}.
+    Regras: soma dos pesos por pallet <= 1 e no máximo `max_incompletas` fileiras incompletas por pallet.
+    Usa First-Fit Decreasing como base e busca exata (branch & bound) para tentar reduzir."""
+    ordenados = sorted(itens, key=lambda i: (i["peso"], i["incompleta"]), reverse=True)
+
+    # Base: First-Fit Decreasing
+    bins_ffd = []  # cada bin = [restante, qtd_incompletas, [indices]]
+    for idx, it in enumerate(ordenados):
+        for b in bins_ffd:
+            if b[0] >= it["peso"] and (not it["incompleta"] or b[1] < max_incompletas):
+                b[0] -= it["peso"]
+                b[1] += int(it["incompleta"])
+                b[2].append(idx)
+                break
+        else:
+            bins_ffd.append([Fraction(1) - it["peso"], int(it["incompleta"]), [idx]])
+    melhor = [b[2] for b in bins_ffd]
+
+    n_inc = sum(1 for i in ordenados if i["incompleta"])
+    limite_inf = max(
+        math.ceil(sum(i["peso"] for i in ordenados)),
+        math.ceil(n_inc / max_incompletas) if max_incompletas else 0,
+    )
+
+    if len(melhor) > limite_inf and len(ordenados) <= 40:
+        estado = {"n": len(melhor), "atrib": None, "nos": 0}
+        rem, inc, atrib = [], [], []
+
+        def dfs(i):
+            if estado["nos"] > 300000 or estado["n"] == limite_inf:
+                return
+            estado["nos"] += 1
+            if i == len(ordenados):
+                if len(rem) < estado["n"]:
+                    estado["n"] = len(rem)
+                    estado["atrib"] = list(atrib)
+                return
+            it = ordenados[i]
+            e_inc = int(it["incompleta"])
+            vistos = set()
+            for b in range(len(rem)):
+                chave = (rem[b], inc[b])
+                if chave in vistos:
+                    continue
+                vistos.add(chave)
+                if rem[b] >= it["peso"] and (not e_inc or inc[b] < max_incompletas):
+                    rem[b] -= it["peso"]
+                    inc[b] += e_inc
+                    atrib.append(b)
+                    dfs(i + 1)
+                    atrib.pop()
+                    rem[b] += it["peso"]
+                    inc[b] -= e_inc
+            if len(rem) + 1 < estado["n"]:
+                rem.append(Fraction(1) - it["peso"])
+                inc.append(e_inc)
+                atrib.append(len(rem) - 1)
+                dfs(i + 1)
+                atrib.pop()
+                rem.pop()
+                inc.pop()
+
+        dfs(0)
+        if estado["atrib"] is not None:
+            grupos_bins = {}
+            for idx, b in enumerate(estado["atrib"]):
+                grupos_bins.setdefault(b, []).append(idx)
+            melhor = list(grupos_bins.values())
+
+    return [[ordenados[i] for i in idxs] for idxs in melhor]
+
+
 def processar_pallets_operador(carrinho, df_produtos):
     estoque_por_sku = {}
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
+        ordem = int(prod.get("Ordem_Caixa", 0))
         estoque_por_sku[sku] = {
             "SKU": sku,
             "Produto": prod["NOME DO PRODUTO"],
             "Nº Caixa": str(prod["NUMERO DA CAIXA"]).strip(),
-            "Ordem_Caixa": int(prod.get("Ordem_Caixa", 0)),
+            "Ordem_Caixa": ordem,
             "Pecas_Por_Caixa": int(prod["QUANTIDADE DE PEÇAS"]),
-            "Caixas_Por_Fileira": int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"]),
+            # regra por tipo de caixa; se o tipo não estiver na regra, usa a planilha
+            "Caixas_Por_Fileira": CAIXAS_POR_FILEIRA_PADRAO.get(
+                ordem, int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
+            ),
             "Quantidade_Fileiras": int(prod["ALTURA"]),
             "Capacidade_Max": int(prod["QUANTIDADE DE CAIXAS NO PALLET"]),
             "Qtd_Disponivel": int(item["Qtd_Caixas"]),
@@ -285,61 +387,20 @@ def processar_pallets_operador(carrinho, df_produtos):
         tipos_pallet.append(TIPO_FECHADO)
         ref["Qtd_Disponivel"] -= ref["Capacidade_Max"]
 
-    # ETAPA 2: Pallets intermediários que fecham a capacidade máxima só com fileiras completas.
-    # Só "confirma" o pallet se ele fechar exatamente; caso contrário nada é retirado do estoque
-    # (as caixas seguem para a etapa 3, nenhuma caixa se perde).
-    while True:
-        skus_disp = [
-            s for s in estoque_por_sku.values()
-            if s["Qtd_Disponivel"] >= s["Caixas_Por_Fileira"]
-        ]
-        if not skus_disp:
-            break
-        skus_disp.sort(
-            key=lambda x: (x["Ordem_Caixa"], x["Qtd_Disponivel"]), reverse=True
-        )
-
-        fechou = False
-        for ref in skus_disp:
-            cap_max = ref["Capacidade_Max"]
-            ordem_tentativa = [ref] + [s for s in skus_disp if s is not ref]
-            lote, retirado = [], {}
-            for s in ordem_tentativa:
-                cx_fil = s["Caixas_Por_Fileira"]
-                disp = s["Qtd_Disponivel"]
-                while disp >= cx_fil and len(lote) + cx_fil <= cap_max:
-                    lote.extend(nova_caixa(s) for _ in range(cx_fil))
-                    disp -= cx_fil
-                    retirado[s["SKU"]] = retirado.get(s["SKU"], 0) + cx_fil
-            if len(lote) == cap_max:
-                for s in skus_disp:
-                    s["Qtd_Disponivel"] -= retirado.get(s["SKU"], 0)
-                pallets_gerados.append(lote)
-                tipos_pallet.append(TIPO_FECHADO)
-                fechou = True
-                break
-        if not fechou:
-            break
-
-    # ETAPA 3: PALLETS FINAIS
-    # 3.1 Junta as sobras por NUMERAÇÃO de caixa (todos os SKUs da mesma caixa juntos)
-    #     e forma o máximo de fileiras completas.
-    # 3.2 Empacota as fileiras completas nos pallets respeitando a capacidade máxima
-    #     (cada fileira ocupa  caixas_por_fileira / capacidade_max  do pallet).
-    #     O pallet final NÃO precisa chegar na capacidade máxima.
-    # 3.3 O que não completa fileira (resto) fica numa fileira incompleta no TOPO do último pallet.
+    # ETAPA 2: Sobras agrupadas por NUMERAÇÃO de caixa (todos os SKUs do mesmo tipo juntos).
+    # Forma o máximo de fileiras COMPLETAS (quantidade fixa por tipo de caixa).
+    # O resto (menos que uma fileira) vira 1 fileira incompleta, que irá para o TOPO de um pallet.
     grupos = {}
     for s in estoque_por_sku.values():
         if s["Qtd_Disponivel"] > 0:
             chave = (s["Ordem_Caixa"], s["Caixas_Por_Fileira"])
             grupos.setdefault(chave, []).append(s)
 
-    fileiras_completas = []  # (peso, [caixas])
-    fileiras_incompletas = []  # (peso, [caixas])
-
+    itens = []
     for (ordem, cx_fil), skus in sorted(
         grupos.items(), key=lambda g: g[0][0], reverse=True
     ):
+        # SKUs com mais caixas consomem as fileiras primeiro; o resto fica nos menores
         skus.sort(key=lambda x: (x["Qtd_Disponivel"], x["SKU"]), reverse=True)
         todas = []
         for s in skus:
@@ -347,42 +408,35 @@ def processar_pallets_operador(carrinho, df_produtos):
             s["Qtd_Disponivel"] = 0
 
         cap_ref = min(s["Capacidade_Max"] for s in skus)
-        peso = min(Fraction(cx_fil, cap_ref), Fraction(1))
+        peso = min(Fraction(cx_fil, cap_ref), Fraction(1))  # fração do pallet por fileira
 
         n_fileiras = len(todas) // cx_fil
         for i in range(n_fileiras):
-            fileiras_completas.append((peso, todas[i * cx_fil:(i + 1) * cx_fil]))
-
+            itens.append({
+                "peso": peso, "ordem": ordem, "incompleta": False,
+                "caixas": todas[i * cx_fil:(i + 1) * cx_fil],
+            })
         resto = todas[n_fileiras * cx_fil:]
         if resto:
             for c in resto:
                 c["Incompleta"] = True
-            fileiras_incompletas.append((peso, resto))
+            itens.append({"peso": peso, "ordem": ordem, "incompleta": True, "caixas": resto})
 
-    pallets_finais = []
-
-    def alocar(peso, caixas, incompleta, somente_ultimo):
-        candidatos = pallets_finais[-1:] if somente_ultimo else pallets_finais
-        for p in candidatos:
-            if p["ocupacao"] + peso <= 1:
-                p["caixas"].extend(caixas)
-                p["ocupacao"] += peso
-                p["tem_incompleta"] = p["tem_incompleta"] or incompleta
-                return
-        pallets_finais.append(
-            {"caixas": list(caixas), "ocupacao": peso, "tem_incompleta": incompleta}
-        )
-
-    for peso, caixas in fileiras_completas:
-        alocar(peso, caixas, False, somente_ultimo=False)
-    for peso, caixas in fileiras_incompletas:
-        alocar(peso, caixas, True, somente_ultimo=True)
-
-    for p in pallets_finais:
-        pallets_gerados.append(p["caixas"])
-        tipos_pallet.append(
-            TIPO_FINAL_INCOMPLETO if p["tem_incompleta"] else TIPO_FINAL_COMPLETO
-        )
+    # ETAPA 3: empacota todas as fileiras com o MENOR número de pallets possível
+    pallets_finais = empacotar_fileiras(itens, MAX_FILEIRAS_INCOMPLETAS_POR_PALLET)
+    for fileiras in pallets_finais:
+        # base -> topo: fileiras completas (maior numeração na base) e a incompleta por último (topo)
+        fileiras.sort(key=lambda i: (i["incompleta"], -i["ordem"]))
+        caixas = [c for i in fileiras for c in i["caixas"]]
+        ocupacao = sum(i["peso"] for i in fileiras)
+        if any(i["incompleta"] for i in fileiras):
+            tipo = TIPO_FINAL_INCOMPLETO
+        elif ocupacao == 1:
+            tipo = TIPO_FECHADO
+        else:
+            tipo = TIPO_FINAL_COMPLETO
+        pallets_gerados.append(caixas)
+        tipos_pallet.append(tipo)
 
     # Consolidar estrutura final para exibição e relatórios
     pallets_bruto = []
