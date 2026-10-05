@@ -310,7 +310,8 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_gerados.append(lote_pallet)
             continuar = True
 
-    # ETAPA 3: Tratamento das sobras agrupadas por numeração de caixa (formar fileiras fechadas por SKU)
+    # ETAPA 3: Tratamento das sobras por numeração de caixa (Formar o máximo de fileiras completas possíveis com as sobras)
+    # Ordenamos os SKUs restantes da caixa maior para a menor para priorizar o preenchimento por tipo de caixa
     skus_sobra_lista = list(estoque_por_sku.values())
     skus_sobra_lista.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
 
@@ -318,6 +319,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         cx_fileira = s["Caixas_Por_Fileira"]
         cap_max = s["Capacidade_Max"]
         while s["Qtd_Disponivel"] >= cx_fileira:
+            # Tenta agrupar tantas fileiras completas quanto cabem num único pallet
             lote_fileiras = []
             while s["Qtd_Disponivel"] >= cx_fileira and len(lote_fileiras) + cx_fileira <= cap_max:
                 for _ in range(cx_fileira):
@@ -337,7 +339,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             else:
                 break
 
-    # ETAPA 4: Recolher todas as sobras restantes (que não completam fileiras) e direcionar juntas para o ÚLTIMO PALLET FRACIONADO
+    # ETAPA 4: Recolher absolutamente tudo o que restou (pedaços de fileira) e direcionar para o ÚLTIMO PALLET FRACIONADO
     sobras_finais = []
     for s in estoque_por_sku.values():
         if s["Qtd_Disponivel"] > 0:
@@ -546,7 +548,7 @@ if st.session_state.processado and st.session_state.carrinho:
                 f"PALETIZACAO_{cliente_limpo}_{data_formatada_arquivo}.pdf"
             )
 
-            pdf_bytes =gerar_pdf(
+            pdf_bytes = gerar_pdf(
                 df_pallets, cliente_informado, data_formatada_pdf
             )
 
