@@ -310,7 +310,34 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_gerados.append(lote_pallet)
             continuar = True
 
-    # ETAPA 3: Coletar TODAS as sobras restantes e direcionar para o ÚLTIMO PALLET
+    # ETAPA 3: Tratamento das sobras agrupadas por numeração de caixa (formar fileiras fechadas por SKU)
+    skus_sobra_lista = list(estoque_por_sku.values())
+    skus_sobra_lista.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
+
+    for s in skus_sobra_lista:
+        cx_fileira = s["Caixas_Por_Fileira"]
+        cap_max = s["Capacidade_Max"]
+        while s["Qtd_Disponivel"] >= cx_fileira:
+            lote_fileiras = []
+            while s["Qtd_Disponivel"] >= cx_fileira and len(lote_fileiras) + cx_fileira <= cap_max:
+                for _ in range(cx_fileira):
+                    lote_fileiras.append({
+                        "SKU": s["SKU"],
+                        "Produto": s["Produto"],
+                        "Nº Caixa": s["Nº Caixa"],
+                        "Ordem_Caixa": s["Ordem_Caixa"],
+                        "Pecas_Por_Caixa": s["Pecas_Por_Caixa"],
+                        "Caixas_Por_Fileira": s["Caixas_Por_Fileira"],
+                        "Quantidade_Fileiras": s["Quantidade_Fileiras"],
+                        "Capacidade_Max": cap_max
+                    })
+                    s["Qtd_Disponivel"] -= 1
+            if lote_fileiras:
+                pallets_gerados.append(lote_fileiras)
+            else:
+                break
+
+    # ETAPA 4: Recolher todas as sobras restantes (que não completam fileiras) e direcionar juntas para o ÚLTIMO PALLET FRACIONADO
     sobras_finais = []
     for s in estoque_por_sku.values():
         if s["Qtd_Disponivel"] > 0:
@@ -330,6 +357,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     if sobras_finais:
         cap_max_padrao = sobras_finais[0]["Capacidade_Max"] if sobras_finais else 32
         
+        # Ordenar sobras finais rigorosamente da caixa maior para a menor
         sobras_finais.sort(key=lambda x: (x["Ordem_Caixa"], x["SKU"]), reverse=True)
         
         while len(sobras_finais) > cap_max_padrao:
@@ -518,7 +546,7 @@ if st.session_state.processado and st.session_state.carrinho:
                 f"PALETIZACAO_{cliente_limpo}_{data_formatada_arquivo}.pdf"
             )
 
-            pdf_bytes = gerar_pdf(
+            pdf_bytes =gerar_pdf(
                 df_pallets, cliente_informado, data_formatada_pdf
             )
 
