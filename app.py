@@ -229,7 +229,7 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO COMEX - LÓGICA OTIMIZADA PARA FILEIRAS E ÚLTIMOS PALLETS ---
+# --- 6. ALGORITMO COMEX - REGRA RIGOROSA DE FILEIRAS NO PENÚLTIMO E ÚLTIMO PALLET ---
 def processar_pallets_operador(carrinho, df_produtos):
     estoque_por_sku = {}
     for item in carrinho:
@@ -249,7 +249,7 @@ def processar_pallets_operador(carrinho, df_produtos):
 
     pallets_gerados = []
 
-    # ETAPA 1: Fechar pallets completos homogêneos (1 SKU por pallet atingindo a capacidade máxima)
+    # ETAPA 1: Fechar pallets completos homogêneos (1 SKU por pallet atingindo capacidade máxima)
     continuar = True
     while continuar:
         continuar = False
@@ -309,7 +309,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             pallets_gerados.append(lote_pallet)
             continuar = True
 
-    # ETAPA 3: Formar fileiras completas isoladas para estoques que sobraram (respeitando a regra de fechar fileiras completas por tipo de caixa)
+    # ETAPA 3: Formar fileiras completas isoladas por tipo de caixa para estoques restantes
     skus_sobra_lista = list(estoque_por_sku.values())
     skus_sobra_lista.sort(key=lambda x: x["Ordem_Caixa"], reverse=True)
 
@@ -336,8 +336,8 @@ def processar_pallets_operador(carrinho, df_produtos):
             else:
                 break
 
-    # ETAPA 4: Tratamento dos Últimos Pallets (Sobras finais que não completaram fileiras)
-    # Agrupa todas as sobras unitárias restantes ordenando da caixa mais pesada/alta para a mais leve (ex: Caixa 3 -> 2 -> 1 -> 0)
+    # ETAPA 4: Tratamento restrito de sobras entre o Penúltimo e Último Pallet
+    # Coleta todas as unidades soltas (que sobraram após formar todas as fileiras completas possíveis)
     sobras_finais = []
     for s in estoque_por_sku.values():
         if s["Qtd_Disponivel"] > 0:
@@ -355,17 +355,38 @@ def processar_pallets_operador(carrinho, df_produtos):
             s["Qtd_Disponivel"] = 0
 
     if sobras_finais:
-        # Ordena as sobras por numeração da caixa decrescente (Caixa 3 primeiro, depois 2, 1, 0)
         sobras_finais.sort(key=lambda x: (x["Ordem_Caixa"], x["SKU"]), reverse=True)
-        cap_max_padrao = sobras_finais[0]["Capacidade_Max"] if sobras_finais else 32
         
-        while len(sobras_finais) > cap_max_padrao:
-            lote_parcial = sobras_finais[:cap_max_padrao]
-            sobras_finais = sobras_finais[cap_max_padrao:]
-            pallets_gerados.append(lote_parcial)
-            
-        if sobras_finais:
-            pallets_gerados.append(sobras_finais)
+        # Vamos agrupar as sobras por tipo de caixa para garantir que fileiras inteiras formadas com sobras fiquem no penúltimo pallet
+        blocos_fileiras_sobra = []
+        unidades_soltas_finais = []
+
+        # Agrupa por SKU para ver se formam fileiras completas com as sobras
+        skus_nos_residuos = {}
+        for item in sobras_finais:
+            sku = item["SKU"]
+            if sku not in skus_nos_residuos:
+                skus_nos_residuos[sku] = []
+            skus_nos_residuos[sku].append(item)
+
+        for sku, itens in skus_nos_residuos.items():
+            cx_fileira = itens[0]["Caixas_Por_Fileira"]
+            while len(itens) >= cx_fileira:
+                fileira_completa = itens[:cx_fileira]
+                itens = itens[cx_fileira:]
+                blocos_fileiras_sobra.extend(fileira_completa)
+            # O que sobra e não fecha uma fileira inteira vai estritamente para o último pallet
+            unidades_soltas_finais.extend(itens)
+
+        # Se houver fileiras completas formadas pelas sobras, elas formam o penúltimo pallet (ou vão para ele sem buracos)
+        if blocos_fileiras_sobra:
+            blocos_fileiras_sobra.sort(key=lambda x: (x["Ordem_Caixa"], x["SKU"]), reverse=True)
+            pallets_gerados.append(blocos_fileiras_sobra)
+
+        # O restante absoluto (que contém os "buracos") vai para o último pallet
+        if unidades_soltas_finais:
+            unidades_soltas_finais.sort(key=lambda x: (x["Ordem_Caixa"], x["SKU"]), reverse=True)
+            pallets_gerados.append(unidades_soltas_finais)
 
     # Consolidar estrutura final para exibição e relatórios
     pallets_bruto = []
@@ -393,7 +414,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         is_ultimo = (idx == len(pallets_gerados) and total_cx_lote < cap_max_lote)
         
         if is_ultimo:
-            tipo_p = "Pallet Final Fracionado (Sobras no Topo) 🟠"
+            tipo_p = "Pallet Final Fracionado (Contém Incompletudes/Buracos) 🟠"
         else:
             tipo_p = "Pallet Fechado (Fileiras Exatas) 🟢"
 
