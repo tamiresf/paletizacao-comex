@@ -232,11 +232,13 @@ st.markdown("---")
 # --- 6. ALGORITMO COMEX - REGRAS REVISADAS DE PALETIZAÇÃO ---
 ALTURA_MAXIMA_FILEIRAS = 5
 
-TIPO_SEQUENCIAL = "Pallet Fechado - SKU unico, sequencial 🟢"
+TIPO_SEQUENCIAL = "Pallet Fechado - SKU único, sequencial 🟢"
 TIPO_MESMA_ALTURA = "Pallet Fechado - mesma caixa e mesma altura 🟢"
 TIPO_ALTURAS_DIFERENTES = "Pallet Fechado - mesma caixa, alturas diferentes 🟡"
-TIPO_INTERMEDIARIO_FECHADO = "Pallet Fechado - fileiras completas 🟢"
-TIPO_FINAL = "Pallet Misto Final / Sobras (Permite Agrupamento Livre) 🟠"
+TIPO_INTERMEDIARIO_FECHADO = (
+    "Pallet Fechado - fileiras completas inteligentes 🟢"
+)
+TIPO_FINAL = "Pallet Misto Final / Sobras (Múltiplos tipos permitidos) 🟠"
 
 
 def _achar_combinacao_exata(unidades, alvo):
@@ -373,14 +375,17 @@ def processar_pallets_operador(carrinho, df_produtos):
                 if achou:
                     break
 
-    # ETAPA 3: Separação estrita de fileiras completas (intermediários sem sobra) e sobras/incompletas (para o pallet final)
+    # ETAPA 3: Formação de fileiras inteligentes respeitando estritamente o tipo de caixa e complementações
     fileiras_completas_todas = []
     sobras_finais_acumuladas = {}
 
     for tipo in tipos:
         cpf = cx_fileira_do_tipo(tipo)
-        skus_tipo = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0]
-        
+        skus_tipo = [
+            s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0
+        ]
+
+        # 1. Tentar formar fileiras puras por SKU
         for s in skus_tipo:
             qtd = s["Restante"]
             restantes_sku = s["Restante"] % cpf
@@ -393,8 +398,15 @@ def processar_pallets_operador(carrinho, df_produtos):
                 })
                 s["Restante"] = restantes_sku
 
-        sobras_ativas = [(s["SKU"], s["Restante"], s["Altura"]) for s in skus_tipo if s["Restante"] > 0]
-        sobras_ativas.sort(key=lambda x: (-x[2], x[0]))
+        # 2. Se sobrou frações, tentar completar fileiras usando outro SKU do mesmo tipo e mesma altura (ou altura diferente se necessário)
+        sobras_ativas = [
+            (s["SKU"], s["Restante"], s["Altura"])
+            for s in skus_tipo
+            if s["Restante"] > 0
+        ]
+        sobras_ativas.sort(
+            key=lambda x: (-x[2], x[0])
+        )  # Ordena por altura decrescente
 
         i = 0
         while i < len(sobras_ativas):
@@ -402,15 +414,31 @@ def processar_pallets_operador(carrinho, df_produtos):
             if qtd1 == 0:
                 i += 1
                 continue
-            
+
             fileira_atual = {sku1: min(cpf, qtd1)}
             cheia = fileira_atual[sku1]
             qtd1 -= fileira_atual[sku1]
-            
+
+            # Buscar complemento na mesma altura primeiro
             if cheia < cpf:
                 for j in range(i + 1, len(sobras_ativas)):
                     sku2, qtd2, alt2 = sobras_ativas[j]
                     if qtd2 > 0 and alt2 == alt1:
+                        pega = min(cpf - cheia, qtd2)
+                        fileira_atual[sku2] = fileira_atual.get(sku2, 0) + pega
+                        cheia += pega
+                        qtd2 -= pega
+                        sobras_ativas[j] = (sku2, qtd2, alt2)
+                        if cheia == cpf:
+                            break
+
+            # Se ainda faltar para completar a fileira, buscar em outra altura do mesmo tipo de caixa
+            if cheia < cpf:
+                for j in range(len(sobras_ativas)):
+                    if j == i:
+                        continue
+                    sku2, qtd2, alt2 = sobras_ativas[j]
+                    if qtd2 > 0 and alt2 != alt1:
                         pega = min(cpf - cheia, qtd2)
                         fileira_atual[sku2] = fileira_atual.get(sku2, 0) + pega
                         cheia += pega
@@ -429,9 +457,11 @@ def processar_pallets_operador(carrinho, df_produtos):
                 if qtd1 == 0:
                     i += 1
             else:
-                # O que sobrou de forma incompleta vai direto para as sobras finais do último pallet
+                # Se mesmo assim não formou fileira completa, vai para as sobras do último pallet
                 for sku_inc, qtd_inc in fileira_atual.items():
-                    sobras_finais_acumuladas[sku_inc] = sobras_finais_acumuladas.get(sku_inc, 0) + qtd_inc
+                    sobras_finais_acumuladas[sku_inc] = (
+                        sobras_finais_acumuladas.get(sku_inc, 0) + qtd_inc
+                    )
                 sobras_ativas[i] = (sku1, 0, alt1)
                 i += 1
 
@@ -455,14 +485,17 @@ def processar_pallets_operador(carrinho, df_produtos):
                 return True
         return False
 
-    # Pallets intermediários estritamente com fileiras completas
+    # Montagem dos pallets intermediários fechados (máximo 5 fileiras, sem sobras, permitindo inserção inteligente de caixas com alturas diferentes se couber no pallet)
     blocos_intermediarios = []
     bloco_atual = []
 
     for f in fileiras_completas_todas:
-        tipos_no_bloco = {skus[sku]["Ordem_Caixa"] for item in bloco_atual for sku in item["itens"]}
+        tipos_no_bloco = {
+            skus[sku]["Ordem_Caixa"] for item in bloco_atual for sku in item["itens"]
+        }
         tipos_no_bloco.add(f["tipo"])
-        
+
+        # Restrição: Máximo 2 tipos de caixa diferentes por pallet intermediário, máximo 5 fileiras e respeitando capacidade máxima
         if (
             len(bloco_atual) >= ALTURA_MAXIMA_FILEIRAS
             or len(tipos_no_bloco) > 2
@@ -480,7 +513,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     for bloco in blocos_intermediarios:
         novo_pallet(TIPO_INTERMEDIARIO_FECHADO, juntar(bloco))
 
-    # Último pallet: Agrupa todas as sobras finais de forma livre, podendo juntar mais caixas juntas sem restrições rígidas
+    # Último pallet: Agrupa todas as sobras finais e permite mais de dois tipos de caixa no mesmo pallet
     if sobras_finais_acumuladas:
         novo_pallet(TIPO_FINAL, sobras_finais_acumuladas)
 
