@@ -239,8 +239,6 @@ TIPO_FINAL = "Pallet Final (caixas soltas e sobras) 🟠"
 
 
 def _achar_combinacao_exata(unidades, alvo):
-    """Procura combinação de blocos inteiros (SKU, fileiras) cuja soma de
-    fileiras seja exatamente 'alvo'. Prefere blocos maiores (menos SKUs no pallet)."""
     unidades = sorted(unidades, key=lambda u: (-u[1], str(u[0])))
     memo = {}
 
@@ -269,7 +267,6 @@ def _achar_combinacao_exata(unidades, alvo):
 
 
 def processar_pallets_operador(carrinho, df_produtos):
-    # --- Preparação dos SKUs do pedido ---
     skus = {}
     for item in carrinho:
         sku = str(item["SKU"]).strip()
@@ -288,7 +285,6 @@ def processar_pallets_operador(carrinho, df_produtos):
             "Restante": int(item["Qtd_Caixas"]),
         }
 
-    # Cada pallet: {"tipo": str, "itens": {sku: caixas}}
     pallets = []
 
     def novo_pallet(tipo, itens):
@@ -298,31 +294,23 @@ def processar_pallets_operador(carrinho, df_produtos):
         return max(s["Caixas_Por_Fileira"] for s in skus.values() if s["Ordem_Caixa"] == ordem)
 
     def fileiras_do_lote(itens):
-        """Fileiras ocupadas: caixas do mesmo tipo dividem fileiras entre si."""
         por_tipo = {}
         for sku, qtd in itens.items():
             por_tipo[skus[sku]["Ordem_Caixa"]] = por_tipo.get(skus[sku]["Ordem_Caixa"], 0) + qtd
         return sum(-(-qtd // cx_fileira_do_tipo(t)) for t, qtd in por_tipo.items())
-
-    def so_fileiras_completas(itens):
-        por_tipo = {}
-        for sku, qtd in itens.items():
-            por_tipo[skus[sku]["Ordem_Caixa"]] = por_tipo.get(skus[sku]["Ordem_Caixa"], 0) + qtd
-        return all(qtd % cx_fileira_do_tipo(t) == 0 for t, qtd in por_tipo.items())
 
     def limite_fileiras(itens):
         return min([ALTURA_MAXIMA_FILEIRAS] + [skus[sku]["Altura"] for sku in itens])
 
     ordem_skus = sorted(skus.values(), key=lambda s: (-s["Ordem_Caixa"], s["SKU"]))
 
-    # ETAPA 1: pallets completos de um único SKU, SEQUENCIAIS (Pallet 01, 02, ...)
+    # ETAPA 1: pallets completos de um único SKU, SEQUENCIAIS
     for s in ordem_skus:
         while s["Restante"] >= s["Capacidade_Max"]:
             novo_pallet(TIPO_SEQUENCIAL, {s["SKU"]: s["Capacidade_Max"]})
             s["Restante"] -= s["Capacidade_Max"]
 
-    # ETAPA 2: pallets mistos, SEMPRE separados por tipo de caixa.
-    # Só entram fileiras completas; blocos de um SKU não são divididos.
+    # ETAPA 2: pallets mistos, separados por tipo de caixa
     tipos = sorted({s["Ordem_Caixa"] for s in skus.values()}, reverse=True)
     for tipo in tipos:
         skus_tipo = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo]
@@ -342,7 +330,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                 skus[sku]["Restante"] -= qtd
             novo_pallet(tipo_pallet, itens)
 
-        # 2.1: MESMA ALTURA dentro do mesmo tipo de caixa
         for altura in sorted({s["Altura"] for s in skus_tipo}, reverse=True):
             while True:
                 escolha = _achar_combinacao_exata(
@@ -352,13 +339,11 @@ def processar_pallets_operador(carrinho, df_produtos):
                     break
                 fechar(escolha, TIPO_MESMA_ALTURA)
 
-        # 2.2: esgotada a mesma altura, mistura ALTURAS DIFERENTES (mesmo tipo de caixa)
         achou = True
         while achou:
             achou = False
             for alvo in sorted({s["Altura"] for s in skus_tipo}, reverse=True):
                 elegiveis = unidades(lambda s, a=alvo: s["Altura"] >= a)
-                # precisa de ao menos um SKU com a altura-limite do pallet
                 for sku_base, fil_base in [u for u in elegiveis if skus[u[0]]["Altura"] == alvo]:
                     outros = [u for u in elegiveis if u[0] != sku_base]
                     resto = _achar_combinacao_exata(outros, alvo - fil_base) if fil_base < alvo else []
@@ -369,11 +354,8 @@ def processar_pallets_operador(carrinho, df_produtos):
                 if achou:
                     break
 
-    # ETAPA 3: sobras. Regra: fechar a fileira do tipo de caixa antes de entrar
-    # outro tipo. Só as caixas que NÃO completam fileira vão para o último pallet.
+    # ETAPA 3: sobras e limite máximo de capacidade do pallet e altura 5
     def montar_fileiras(tipo):
-        """Divide as sobras de um tipo em fileiras completas + caixas soltas.
-        Primeiro por mesma altura; depois mistura alturas (mesmo tipo)."""
         cpf = cx_fileira_do_tipo(tipo)
         sobras = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0]
         fileiras, residuos = [], []
@@ -399,7 +381,6 @@ def processar_pallets_operador(carrinho, df_produtos):
             )
             resto = consumir([(s["SKU"], s["Restante"]) for s in grupo], altura)
             residuos.extend(resto.items())
-        # mistura alturas diferentes só com o que sobrou (mesmo tipo de caixa)
         residuos.sort(key=lambda kv: (-skus[kv[0]]["Altura"], -kv[1], kv[0]))
         soltas = consumir(residuos, None)
         for s in sobras:
@@ -418,7 +399,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "solta": True,
             })
 
-    # tipos com mais fileiras primeiro (empate: menor número de caixa)
     fileiras_todas.sort(key=lambda tf: (-len(tf[1]), tf[0]))
 
     def juntar(lista_fileiras):
@@ -428,9 +408,21 @@ def processar_pallets_operador(carrinho, df_produtos):
                 itens[sku] = itens.get(sku, 0) + qtd
         return itens
 
+    def capacidade_max_atingida(lista_fileiras, nova_fileira):
+        """Verifica se juntando a nova fileira ultrapassa a capacidade máxima de caixas do pallet para os itens envolvidos."""
+        temp_itens = juntar(lista_fileiras + [nova_fileira])
+        for sku, qtd in temp_itens.items():
+            if qtd > skus[sku]["Capacidade_Max"]:
+                return True
+        return False
+
     def cabe(lista_fileiras, nova):
         alt = min([ALTURA_MAXIMA_FILEIRAS] + [f["altura"] for f in lista_fileiras + [nova]])
-        return len(lista_fileiras) + 1 <= alt
+        if len(lista_fileiras) + 1 > alt:
+            return False
+        if capacidade_max_atingida(lista_fileiras, nova):
+            return False
+        return True
 
     TIPO_FILEIRAS_SOBRAS = "Pallet Fechado - fileiras completas de sobras 🟢"
     fechados_sobras = []
@@ -443,13 +435,12 @@ def processar_pallets_operador(carrinho, df_produtos):
                     fechados_sobras.append(list(atual))
                     atual = []
                 atual.append(f)
-                if len(atual) == min(ALTURA_MAXIMA_FILEIRAS, altura):
+                if len(atual) == min(ALTURA_MAXIMA_FILEIRAS, altura) or capacidade_max_atingida(atual, {}):
                     fechados_sobras.append(list(atual))
                     atual = []
         if atual:
             parciais.append(atual)
 
-    # pallets incompletos de alturas diferentes: juntar se couber
     parciais.sort(key=lambda b: -len(b))
     blocos = []
     for b in parciais:
@@ -463,7 +454,6 @@ def processar_pallets_operador(carrinho, df_produtos):
             blocos.append(list(b))
     blocos.sort(key=lambda b: -len(b))
 
-    # caixas soltas: vão para o ÚLTIMO pallet (ou novo, se não couber)
     for solta in soltas_por_tipo:
         for bloco in reversed(blocos):
             if cabe(bloco, solta):
@@ -472,10 +462,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         else:
             blocos.append([solta])
 
-    # Exportação: pallet com sobras deve ter, sempre que possível, ao menos
-    # 2 fileiras COMPLETAS. Se faltar, traz fileiras completas de outros pallets
-    # (primeiro dos pallets de sobras; depois dos pallets mistos; por último dos
-    # pallets sequenciais de SKU único), sem deixar o doador com menos de 2 fileiras.
     TIPO_REAJUSTADO = "Pallet Fechado - fileiras completas (reajustado) 🟢"
     TIPO_SEQ_OU_MISTO = {TIPO_SEQUENCIAL: 2, TIPO_MESMA_ALTURA: 1, TIPO_ALTURAS_DIFERENTES: 1}
 
@@ -483,7 +469,6 @@ def processar_pallets_operador(carrinho, df_produtos):
         while sum(1 for f in bloco if not f.get("solta")) < 2:
             tipos_bloco = {f["tipo"] for f in bloco}
             alt_bloco = min([ALTURA_MAXIMA_FILEIRAS] + [f["altura"] for f in bloco])
-            # 1) doadores: pallets de sobras (listas de fileiras)
             candidatos = []
             for doador in fechados_sobras:
                 if len(doador) <= 2:
@@ -500,7 +485,6 @@ def processar_pallets_operador(carrinho, df_produtos):
                 doador.remove(f)
                 bloco.append(f)
                 continue
-            # 2) doadores: pallets já formados nas etapas 1 e 2
             candidatos = []
             for idx_p, pal in enumerate(pallets):
                 if pal["tipo"] not in TIPO_SEQ_OU_MISTO and pal["tipo"] != TIPO_REAJUSTADO:
@@ -534,7 +518,6 @@ def processar_pallets_operador(carrinho, df_produtos):
     for bloco in blocos:
         novo_pallet(TIPO_FINAL, juntar(bloco))
 
-    # --- Estrutura final para exibição e relatórios ---
     linhas = []
     for idx, p in enumerate(pallets, 1):
         itens_ord = sorted(
@@ -677,46 +660,3 @@ if st.session_state.processado and st.session_state.carrinho:
 
             st.download_button(
                 label="📄 Baixar Relatório em PDF",
-                data=pdf_bytes,
-                file_name=nome_arquivo_pdf,
-                mime="application/pdf",
-                key="download_pdf_btn",
-            )
-        except Exception as err:
-            st.error(f"Erro ao gerar PDF: {err}")
-
-    st.markdown("---")
-
-    for p_id in pallets_unicos:
-        df_p = df_pallets[df_pallets["ID"] == p_id]
-        tipo_pallet = df_p["Tipo"].iloc[0]
-        total_cx = int(df_p["Qtd Caixas"].sum())
-        total_pc = int(df_p["Total Peças"].sum())
-
-        with st.expander(
-            f"📌 {p_id} - Total de Caixas: {total_cx} cx | Total de Peças: {total_pc} peças | {int(df_p['Fileiras no Pallet'].iloc[0])} fileiras ({tipo_pallet})",
-            expanded=True,
-        ):
-            st.markdown(
-                "**Composição detalhada (organizada da base para o topo - fileiras completas e ordenadas por numeração de caixa):**"
-            )
-            st.dataframe(
-                df_p[[
-                    "SKU",
-                    "Produto",
-                    "Nº Caixa",
-                    "Qtd Caixas",
-                    "Total Peças",
-                    "Fileiras no Pallet",
-                    "Caixas_Por_Fileira",
-                    "Quantidade_Fileiras",
-                ]],
-                use_container_width=True,
-            )
-
-            str_destaque = f"""
-                <div style="text-align: right;">
-                    <span class="total-caixas-destaque">📦 Total de Caixas do Pallet: {total_cx} cx</span>
-                </div>
-                """
-            st.markdown(str_destaque, unsafe_allow_html=True)
