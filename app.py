@@ -231,11 +231,12 @@ st.markdown("---")
 
 # --- 6. ALGORITMO COMEX - PALLETS SEQUENCIAIS, TIPO DE CAIXA E ALTURA ---
 ALTURA_MAXIMA_FILEIRAS = 5
+MINIMO_FILEIRAS_ULTIMO_PALLET = 2
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU unico, sequencial 🟢"
 TIPO_MESMA_ALTURA = "Pallet Fechado - mesma caixa e mesma altura 🟢"
 TIPO_ALTURAS_DIFERENTES = "Pallet Fechado - mesma caixa, alturas diferentes 🟡"
-TIPO_FINAL = "Pallet Final (caixas soltas e sobras) 🟠"
+TIPO_FINAL = "Pallet Final (mínimo de 2 fileiras) 🟠"
 
 
 def _achar_combinacao_exata(unidades, alvo):
@@ -351,7 +352,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 if achou:
                     break
 
-    # ETAPA 3: sobras e limite máximo de capacidade do pallet e altura 5
+    # ETAPA 3: sobras, respeitando limite máximo de 5 fileiras e mínimo de 2 fileiras no pallet final
     def montar_fileiras(tipo):
         cpf = cx_fileira_do_tipo(tipo)
         sobras = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0]
@@ -457,6 +458,19 @@ def processar_pallets_operador(carrinho, df_produtos):
                 break
         else:
             blocos.append([solta])
+
+    # Garante que o último pallet/bloco tenha no mínimo MINIMO_FILEIRAS_ULTIMO_PALLET (2 fileiras), se possível realocando
+    if len(blocos) > 1 and len(blocos[-1]) < MINIMO_FILEIRAS_ULTIMO_PALLET:
+        penultimo = blocos[-2]
+        ultimo = blocos[-1]
+        # Tenta puxar fileiras do penúltimo para o último para atingir o mínimo, se couber
+        while len(ultimo) < MINIMO_FILEIRAS_ULTIMO_PALLET and len(penultimo) > MINIMO_FILEIRAS_ULTIMO_PALLET:
+            f_mov = penultimo.pop()
+            if cabe(ultimo, f_mov):
+                ultimo.append(f_mov)
+            else:
+                penultimo.append(f_mov)
+                break
 
     TIPO_REAJUSTADO = "Pallet Fechado - fileiras completas (reajustado) 🟢"
     TIPO_SEQ_OU_MISTO = {TIPO_SEQUENCIAL: 2, TIPO_MESMA_ALTURA: 1, TIPO_ALTURAS_DIFERENTES: 1}
