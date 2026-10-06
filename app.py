@@ -660,3 +660,46 @@ if st.session_state.processado and st.session_state.carrinho:
 
             st.download_button(
                 label="📄 Baixar Relatório em PDF",
+                data=pdf_bytes,
+                file_name=nome_arquivo_pdf,
+                mime="application/pdf",
+                key="download_pdf_btn",
+            )
+        except Exception as err:
+            st.error(f"Erro ao gerar PDF: {err}")
+
+    st.markdown("---")
+
+    for p_id in pallets_unicos:
+        df_p = df_pallets[df_pallets["ID"] == p_id]
+        tipo_pallet = df_p["Tipo"].iloc[0]
+        total_cx = int(df_p["Qtd Caixas"].sum())
+        total_pc = int(df_p["Total Peças"].sum())
+
+        with st.expander(
+            f"📌 {p_id} - Total de Caixas: {total_cx} cx | Total de Peças: {total_pc} peças | {int(df_p['Fileiras no Pallet'].iloc[0])} fileiras ({tipo_pallet})",
+            expanded=True,
+        ):
+            st.markdown(
+                "**Composição detalhada (organizada da base para o topo - fileiras completas e ordenadas por numeração de caixa):**"
+            )
+            st.dataframe(
+                df_p[[
+                    "SKU",
+                    "Produto",
+                    "Nº Caixa",
+                    "Qtd Caixas",
+                    "Total Peças",
+                    "Fileiras no Pallet",
+                    "Caixas_Por_Fileira",
+                    "Quantidade_Fileiras",
+                ]],
+                use_container_width=True,
+            )
+
+            str_destaque = f"""
+                <div style="text-align: right;">
+                    <span class="total-caixas-destaque">📦 Total de Caixas do Pallet: {total_cx} cx</span>
+                </div>
+                """
+            st.markdown(str_destaque, unsafe_allow_html=True)
