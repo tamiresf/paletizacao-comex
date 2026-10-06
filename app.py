@@ -229,73 +229,52 @@ else:
 st.markdown("---")
 
 
-# --- 6. ALGORITMO COMEX - REGRAS REVISADAS DE PALETIZAÇÃO ---
+# --- 6. ALGORITMO COMEX - V2: OTIMIZAÇÃO DE OCUPAÇÃO DOS PALLETS ---
 ALTURA_MAXIMA_FILEIRAS = 5
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU único, sequencial 🟢"
 TIPO_MESMA_ALTURA = "Pallet Fechado - mesma caixa e mesma altura 🟢"
 TIPO_ALTURAS_DIFERENTES = "Pallet Fechado - mesma caixa, alturas diferentes 🟡"
-TIPO_INTERMEDIARIO_FECHADO = (
-    "Pallet Fechado - fileiras completas inteligentes 🟢"
-)
+TIPO_INTERMEDIARIO_FECHADO = "Pallet Fechado - tipos diferentes, fileiras completas 🟢"
 TIPO_FINAL = "Pallet Misto Final / Sobras (Múltiplos tipos permitidos) 🟠"
-
-
-def _achar_combinacao_exata(unidades, alvo):
-    unidades = sorted(unidades, key=lambda u: (-u[1], str(u[0])))
-    memo = {}
-
-    def rec(i, restante):
-        if restante == 0:
-            return ()
-        if i >= len(unidades) or restante < 0:
-            return None
-        chave = (i, restante)
-        if chave in memo:
-            return memo[chave]
-        resultado = None
-        if unidades[i][1] <= restante:
-            sub = rec(i + 1, restante - unidades[i][1])
-            if sub is not None:
-                resultado = (i,) + sub
-        if resultado is None:
-            resultado = rec(i + 1, restante)
-        memo[chave] = resultado
-        return resultado
-
-    achado = rec(0, alvo)
-    if achado is None:
-        return None
-    return [unidades[i] for i in achado]
-
 
 
 def processar_pallets_operador(carrinho, df_produtos):
     """
-    Algoritmo de paletização orientado à operação.
+    V2 - Algoritmo de paletização orientado à operação.
 
-    Princípios:
-    1. Pallet completo de um único SKU é sempre priorizado.
-    2. O mesmo SKU que ocupa vários pallets permanece sequencial.
-    3. Depois dos pallets completos, trabalha-se com FILEIRAS como unidade
-       física, evitando chamar de "fileira completa" uma quantidade parcial.
-    4. Prioriza o mesmo número de caixa, depois a mesma altura e, por fim,
-       combinações de alturas diferentes.
-    5. Nenhum pallet pode ultrapassar 5 fileiras nem a capacidade máxima
-       cadastrada de qualquer SKU.
-    6. Sobras que não conseguem formar fileiras fechadas vão para pallets finais,
-       sempre respeitando as capacidades.
+    Objetivo principal:
+        reduzir a quantidade total de pallets, sem perder as regras físicas.
+
+    Ordem de decisão:
+        1. Pallets completos de um único SKU permanecem sequenciais.
+        2. Para os demais, procura-se o MELHOR pallet possível antes de
+           consumir qualquer caixa: maior ocupação, respeitando no máximo
+           5 fileiras e a capacidade máxima de cada SKU.
+        3. Dentro de ocupações equivalentes, prioriza-se:
+             a) mesmo tipo de caixa + mesma altura;
+             b) mesmo tipo de caixa + alturas diferentes;
+             c) tipos diferentes de caixa + mesma altura;
+             d) mistura final apenas para sobras parciais.
+        4. Fileiras completas nunca são quebradas nas etapas 2 e 3.
+        5. Sobras parciais só são tratadas depois que todas as combinações
+           de fileiras completas foram esgotadas.
+
+    Observação importante:
+        "Pallet fechado" pode conter mais de um SKU. O que importa é que
+        todas as fileiras sejam completas e que as capacidades cadastradas
+        sejam respeitadas.
     """
     skus = {}
 
-    # -----------------------------
-    # 1. Preparação dos SKUs
-    # -----------------------------
+    # -------------------------------------------------------
+    # 1. PREPARAÇÃO DOS SKUS
+    # -------------------------------------------------------
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
 
-        cx_fileira = max(int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"]), 1)
+        cpf = max(int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"]), 1)
         altura = max(min(int(prod["ALTURA"]), ALTURA_MAXIMA_FILEIRAS), 1)
         capacidade = max(int(prod["QUANTIDADE DE CAIXAS NO PALLET"]), 1)
         quantidade = max(int(item["Qtd_Caixas"]), 0)
@@ -306,7 +285,7 @@ def processar_pallets_operador(carrinho, df_produtos):
             "Nº Caixa": str(prod["NUMERO DA CAIXA"]).strip(),
             "Ordem_Caixa": int(prod.get("Ordem_Caixa", 0)),
             "Pecas_Por_Caixa": int(prod["QUANTIDADE DE PEÇAS"]),
-            "Caixas_Por_Fileira": cx_fileira,
+            "Caixas_Por_Fileira": cpf,
             "Altura": altura,
             "Capacidade_Max": capacidade,
             "Restante": quantidade,
@@ -321,240 +300,319 @@ def processar_pallets_operador(carrinho, df_produtos):
             "fileiras": list(fileiras or []),
         })
 
-    def adicionar_fileira(lista, sku, quantidade, completa=True):
-        """Registra uma fileira física. Quantidade pode ser parcial apenas
-        quando completa=False."""
-        lista.append({
+    def adicionar_fileira(fileiras, sku, qtd, completa=True):
+        fileiras.append({
             "sku": sku,
-            "qtd": int(quantidade),
+            "qtd": int(qtd),
             "completa": bool(completa),
         })
 
-    def total_caixas(itens):
-        return sum(itens.values())
-
-    def capacidade_disponivel(itens, sku):
-        return max(0, skus[sku]["Capacidade_Max"] - itens.get(sku, 0))
-
-    def ordenar_skus(lista):
-        return sorted(
-            lista,
-            key=lambda s: (-s["Ordem_Caixa"], -s["Altura"], s["SKU"])
-        )
-
-    ordem_skus = ordenar_skus(list(skus.values()))
+    ordem_skus = sorted(
+        skus.values(),
+        key=lambda s: (-s["Ordem_Caixa"], -s["Altura"], s["SKU"]),
+    )
 
     # -------------------------------------------------------
-    # 2. Pallets completos: um SKU por pallet, sequenciais
+    # 2. PALLETS COMPLETOS DE UM SKU - SEMPRE SEQUENCIAIS
     # -------------------------------------------------------
     for s in ordem_skus:
         cap = s["Capacidade_Max"]
         while s["Restante"] >= cap:
-            itens = {s["SKU"]: cap}
             fileiras = []
-            # Se a capacidade cadastrada for múltipla da fileira,
-            # conseguimos representar todas as fileiras.
-            qtd_fileiras = cap // s["Caixas_Por_Fileira"]
-            if (
-                qtd_fileiras > 0
-                and qtd_fileiras * s["Caixas_Por_Fileira"] == cap
-                and qtd_fileiras <= ALTURA_MAXIMA_FILEIRAS
-            ):
-                for _ in range(qtd_fileiras):
-                    adicionar_fileira(
-                        fileiras, s["SKU"], s["Caixas_Por_Fileira"], True
-                    )
-            novo_pallet(TIPO_SEQUENCIAL, itens, fileiras)
+            # A capacidade cadastrada é a regra de quantidade de caixas.
+            # Se ela não for divisível pela quantidade por fileira, ainda
+            # assim o pallet é válido pela capacidade; a composição física
+            # será indicada como fileiras + eventual quantidade residual.
+            completas, parcial = divmod(cap, s["Caixas_Por_Fileira"])
+            completas = min(completas, ALTURA_MAXIMA_FILEIRAS)
+            consumivel = completas * s["Caixas_Por_Fileira"]
+
+            # Só fazemos o pallet fechado de SKU único diretamente quando
+            # conseguimos representar a capacidade inteira em até 5 fileiras.
+            if consumivel != cap:
+                break
+
+            for _ in range(completas):
+                adicionar_fileira(fileiras, s["SKU"], s["Caixas_Por_Fileira"], True)
+
+            novo_pallet(TIPO_SEQUENCIAL, {s["SKU"]: cap}, fileiras)
             s["Restante"] -= cap
 
     # -------------------------------------------------------
-    # 3. Utilitários para montar pallets por fileiras
+    # 3. FUNÇÕES DE BUSCA DE CANDIDATOS
     # -------------------------------------------------------
-    def candidatos_fileiras(tipo, altura_exata=None, minimo_altura=None):
-        resultado = []
-        for s in ordem_skus:
-            if s["Ordem_Caixa"] != tipo or s["Restante"] <= 0:
-                continue
-            if altura_exata is not None and s["Altura"] != altura_exata:
-                continue
-            if minimo_altura is not None and s["Altura"] < minimo_altura:
-                continue
+    def candidatos_disponiveis():
+        return [
+            s for s in ordem_skus
+            if s["Restante"] >= s["Caixas_Por_Fileira"]
+        ]
 
-            qtd_fileiras = s["Restante"] // s["Caixas_Por_Fileira"]
-            qtd_fileiras = min(
-                qtd_fileiras,
-                s["Capacidade_Max"] // s["Caixas_Por_Fileira"],
-                ALTURA_MAXIMA_FILEIRAS,
+    def pode_usar(s, qtd_fileiras):
+        if qtd_fileiras <= 0:
+            return False
+        qtd = qtd_fileiras * s["Caixas_Por_Fileira"]
+        return (
+            qtd <= s["Restante"]
+            and qtd <= s["Capacidade_Max"]
+            and qtd_fileiras <= ALTURA_MAXIMA_FILEIRAS
+        )
+
+    def gerar_escolhas(candidatos, limite=ALTURA_MAXIMA_FILEIRAS):
+        """Gera combinações de até 5 fileiras, no máximo uma parcela por SKU."""
+        estados = {0: []}
+
+        for s in candidatos:
+            cpf = s["Caixas_Por_Fileira"]
+            max_n = min(
+                s["Restante"] // cpf,
+                s["Capacidade_Max"] // cpf,
+                limite,
             )
-            if qtd_fileiras > 0:
-                resultado.append({
-                    "sku": s["SKU"],
-                    "fileiras": qtd_fileiras,
-                    "cap_fileira": s["Caixas_Por_Fileira"],
-                    "altura": s["Altura"],
-                })
-        return resultado
+            if max_n <= 0:
+                continue
 
-    def aplicar_fileiras(escolha, tipo_pallet):
-        """Consome fileiras completas e cria um pallet."""
+            novos = dict(estados)
+            for usadas, escolha in estados.items():
+                for n in range(1, min(max_n, limite - usadas) + 1):
+                    total = usadas + n
+                    nova = escolha + [(s["SKU"], n)]
+
+                    anterior = novos.get(total)
+                    if anterior is None:
+                        novos[total] = nova
+                    else:
+                        # Mantém a melhor composição para a mesma quantidade
+                        # de fileiras: menos SKUs e maior ordem de caixa.
+                        def desempate(e):
+                            return (
+                                -len(e),
+                                max(skus[x]["Ordem_Caixa"] for x, _ in e),
+                            )
+
+                        if desempate(nova) > desempate(anterior):
+                            novos[total] = nova
+
+            estados = novos
+
+        return [e for total, e in estados.items() if total > 0]
+
+    def caracteristicas(escolha):
+        tipos = {skus[sku]["Ordem_Caixa"] for sku, _ in escolha}
+        alturas = {skus[sku]["Altura"] for sku, _ in escolha}
+        caixas = sum(
+            n * skus[sku]["Caixas_Por_Fileira"]
+            for sku, n in escolha
+        )
+        fileiras = sum(n for _, n in escolha)
+        return caixas, fileiras, tipos, alturas
+
+    def classificar_escolha(escolha):
+        """
+        Classifica a qualidade operacional da combinação.
+
+        3 = mesmo tipo + mesma altura
+        2 = mesmo tipo + alturas diferentes
+        1 = tipos diferentes + mesma altura
+        0 = combinação de tipos/alturas diferentes (não usada nas etapas
+            normais, mas mantida para segurança).
+        """
+        _, _, tipos, alturas = caracteristicas(escolha)
+        if len(tipos) == 1 and len(alturas) == 1:
+            return 3
+        if len(tipos) == 1:
+            return 2
+        if len(alturas) == 1:
+            return 1
+        return 0
+
+    def pontuacao(escolha):
+        caixas, fileiras, tipos, alturas = caracteristicas(escolha)
+        classe = classificar_escolha(escolha)
+
+        # A quantidade de caixas é o critério dominante, pois o objetivo é
+        # reduzir pallets. Depois entram as regras de simplicidade operacional.
+        return (
+            caixas,
+            fileiras,
+            classe,
+            -len(escolha),
+            -len(tipos),
+            -len(alturas),
+            max(skus[sku]["Ordem_Caixa"] for sku, _ in escolha),
+        )
+
+    def escolher_melhor(candidatos):
+        escolhas = gerar_escolhas(candidatos)
+        if not escolhas:
+            return []
+        return max(escolhas, key=pontuacao)
+
+    def consumir(escolha, tipo_pallet):
         itens = {}
         fileiras = []
 
-        for sku, n_fileiras in escolha:
+        for sku, n in escolha:
             s = skus[sku]
-            qtd = n_fileiras * s["Caixas_Por_Fileira"]
-            if qtd <= 0:
-                continue
+            qtd = n * s["Caixas_Por_Fileira"]
+
+            if not pode_usar(s, n):
+                raise ValueError(
+                    f"Combinação inválida para o SKU {sku}: {qtd} caixas."
+                )
 
             itens[sku] = itens.get(sku, 0) + qtd
             s["Restante"] -= qtd
 
-            for _ in range(n_fileiras):
-                adicionar_fileira(
-                    fileiras, sku, s["Caixas_Por_Fileira"], True
-                )
+            for _ in range(n):
+                adicionar_fileira(fileiras, sku, s["Caixas_Por_Fileira"], True)
 
-        if itens:
-            novo_pallet(tipo_pallet, itens, fileiras)
-
-    def melhor_combinacao_fileiras(candidatos, limite=ALTURA_MAXIMA_FILEIRAS):
-        """
-        Seleciona até 'limite' fileiras.
-        Critérios:
-        - maximizar número de fileiras ocupadas;
-        - preferir menos SKUs;
-        - preferir maior altura base;
-        - manter a ordem de caixa.
-        """
-        # Como um pallet tem no máximo 5 fileiras, usamos uma programação
-        # dinâmica pequena e previsível em vez de uma busca combinatória que
-        # poderia crescer muito com a quantidade de SKUs.
-        estados = {0: []}
-
-        for c in candidatos:
-            sku = c["sku"]
-            max_n = min(c["fileiras"], limite)
-            novos = dict(estados)
-
-            for usadas, escolha_atual in estados.items():
-                for n in range(1, min(max_n, limite - usadas) + 1):
-                    novo_total = usadas + n
-                    # Um SKU aparece no máximo uma vez na escolha.
-                    nova_escolha = escolha_atual + [(sku, n)]
-
-                    anterior = novos.get(novo_total)
-                    if anterior is None:
-                        novos[novo_total] = nova_escolha
-                    else:
-                        # Empate na quantidade de fileiras:
-                        # prefere menos SKUs e, depois, maior altura.
-                        def score(escolha):
-                            return (
-                                -len(escolha),
-                                min(
-                                    skus[x]["Altura"] for x, _ in escolha
-                                ),
-                                max(
-                                    skus[x]["Ordem_Caixa"] for x, _ in escolha
-                                ),
-                            )
-
-                        if score(nova_escolha) > score(anterior):
-                            novos[novo_total] = nova_escolha
-
-            estados = novos
-
-        if not estados:
-            return []
-
-        # Maximiza ocupação. Em empate, reduz a quantidade de SKUs.
-        melhor_total = max(estados)
-        candidatos_melhores = [
-            escolha
-            for total, escolha in estados.items()
-            if total == melhor_total
-        ]
-
-        return max(
-            candidatos_melhores,
-            key=lambda escolha: (
-                -len(escolha),
-                min(skus[x]["Altura"] for x, _ in escolha),
-                max(skus[x]["Ordem_Caixa"] for x, _ in escolha),
-            ),
-        )
+        novo_pallet(tipo_pallet, itens, fileiras)
 
     # -------------------------------------------------------
-    # 4. Primeiro: pallets fechados da mesma caixa e mesma altura
+    # 4. MONTAGEM OTIMIZADA DOS PALLETS FECHADOS
     # -------------------------------------------------------
-    tipos = sorted(
-        {s["Ordem_Caixa"] for s in skus.values()},
-        reverse=True,
-    )
-
-    for tipo in tipos:
-        alturas = sorted(
-            {
-                s["Altura"]
-                for s in ordem_skus
-                if s["Ordem_Caixa"] == tipo and s["Restante"] > 0
-            },
-            reverse=True,
-        )
-
-        for altura in alturas:
-            while True:
-                candidatos = candidatos_fileiras(tipo, altura_exata=altura)
-                if not candidatos:
-                    break
-
-                escolha = melhor_combinacao_fileiras(candidatos)
-                if not escolha:
-                    break
-
-                aplicar_fileiras(escolha, TIPO_MESMA_ALTURA)
-
-    # -------------------------------------------------------
-    # 5. Depois: mesma caixa, permitindo alturas diferentes
-    # -------------------------------------------------------
-    for tipo in tipos:
-        while True:
-            candidatos = candidatos_fileiras(tipo)
-            if not candidatos:
-                break
-
-            escolha = melhor_combinacao_fileiras(candidatos)
-            if not escolha:
-                break
-
-            aplicar_fileiras(escolha, TIPO_ALTURAS_DIFERENTES)
-
-    # -------------------------------------------------------
-    # 6. Reunir sobras que não fecharam uma fileira
-    # -------------------------------------------------------
-    # Sobras parciais ficam separadas por SKU. Isso é importante para não
-    # transformar uma quantidade parcial em uma falsa "fileira completa".
-    sobras = {
-        s["SKU"]: s["Restante"]
-        for s in ordem_skus
-        if s["Restante"] > 0
-    }
-
-    # -------------------------------------------------------
-    # 7. Pallets finais: sobras, sem ultrapassar 5 fileiras
-    # -------------------------------------------------------
-    sobras_restantes = dict(sobras)
-
-    while any(qtd > 0 for qtd in sobras_restantes.values()):
-        candidatos = [
-            s for s in ordem_skus
-            if sobras_restantes.get(s["SKU"], 0) > 0
-        ]
+    # Importante: não processamos um tipo de caixa inteiro de uma vez.
+    # A cada pallet, o sistema olha novamente TODOS os SKUs disponíveis.
+    # Isso evita o erro da versão anterior em que, por exemplo, 3 fileiras
+    # de um tipo eram consumidas antes de perceber que poderiam completar
+    # 5 fileiras junto com outro tipo de caixa.
+    while True:
+        candidatos = candidatos_disponiveis()
         if not candidatos:
             break
 
-        # Prioriza a maior numeração de caixa e, em seguida, a maior altura.
-        candidatos.sort(
+        # 4.1 Primeiro tenta encontrar o melhor pallet exclusivamente dentro
+        # de um tipo + mesma altura.
+        melhores_mesmo_tipo_altura = []
+        for tipo in sorted({s["Ordem_Caixa"] for s in candidatos}, reverse=True):
+            for altura in sorted(
+                {s["Altura"] for s in candidatos if s["Ordem_Caixa"] == tipo},
+                reverse=True,
+            ):
+                grupo = [
+                    s for s in candidatos
+                    if s["Ordem_Caixa"] == tipo and s["Altura"] == altura
+                ]
+                escolha = escolher_melhor(grupo)
+                if escolha:
+                    melhores_mesmo_tipo_altura.append(escolha)
+
+        melhor_1 = max(melhores_mesmo_tipo_altura, key=pontuacao) if melhores_mesmo_tipo_altura else []
+
+        # 4.2 Também calcula as alternativas mais amplas ANTES de consumir.
+        # Assim, uma combinação de 5 fileiras com tipos diferentes pode vencer
+        # duas combinações separadas de 3 + 2 fileiras.
+        alternativas = []
+
+        # Mesmo tipo, alturas diferentes.
+        for tipo in sorted({s["Ordem_Caixa"] for s in candidatos}, reverse=True):
+            grupo = [s for s in candidatos if s["Ordem_Caixa"] == tipo]
+            escolha = escolher_melhor(grupo)
+            if escolha:
+                alternativas.append(escolha)
+
+        # Tipos diferentes, mesma altura.
+        for altura in sorted({s["Altura"] for s in candidatos}, reverse=True):
+            grupo = [s for s in candidatos if s["Altura"] == altura]
+            tipos_grupo = {s["Ordem_Caixa"] for s in grupo}
+            if len(tipos_grupo) >= 2:
+                escolha = escolher_melhor(grupo)
+                if escolha and len({skus[x]["Ordem_Caixa"] for x, _ in escolha}) >= 2:
+                    alternativas.append(escolha)
+
+        # Escolhe globalmente a combinação que mais reduz a quantidade de
+        # pallets. Em empate, segue a prioridade operacional.
+        todas = []
+        if melhor_1:
+            todas.append(melhor_1)
+        todas.extend(alternativas)
+
+        if not todas:
+            break
+
+        melhor = max(todas, key=pontuacao)
+        classe = classificar_escolha(melhor)
+
+        if classe == 3:
+            tipo_saida = TIPO_MESMA_ALTURA
+        elif classe == 2:
+            tipo_saida = TIPO_ALTURAS_DIFERENTES
+        elif classe == 1:
+            tipo_saida = TIPO_INTERMEDIARIO_FECHADO
+        else:
+            # Esta situação não deveria ocorrer nas alternativas normais.
+            break
+
+        consumir(melhor, tipo_saida)
+
+    # -------------------------------------------------------
+    # 5. SOBRAS PARCIAIS - ÚLTIMA ETAPA
+    # -------------------------------------------------------
+    # Antes de abrir um pallet novo, tenta encaixar cada sobra parcial em um
+    # pallet já existente que ainda tenha espaço físico e capacidade. Isso é
+    # essencial para a redução real de pallets: por exemplo, 12 + 5 caixas
+    # do mesmo SKU devem preferencialmente permanecer no MESMO pallet.
+    def adicionar_sobra_a_pallet_existente(s):
+        sku = s["SKU"]
+        qtd = s["Restante"]
+        if qtd <= 0:
+            return False
+
+        candidatos = []
+        for idx, p in enumerate(pallets):
+            if len(p["fileiras"]) >= ALTURA_MAXIMA_FILEIRAS:
+                continue
+
+            usado_sku = p["itens"].get(sku, 0)
+            capacidade = s["Capacidade_Max"] - usado_sku
+            if capacidade <= 0:
+                continue
+
+            # Para inserir uma sobra parcial, priorizamos pallets que já
+            # possuam o mesmo tipo e a mesma altura. Em seguida, mesmo tipo.
+            tipos_p = {skus[x]["Ordem_Caixa"] for x in p["itens"]}
+            alturas_p = {skus[x]["Altura"] for x in p["itens"]}
+
+            if tipos_p == {s["Ordem_Caixa"]} and alturas_p == {s["Altura"]}:
+                prioridade = 3
+            elif tipos_p == {s["Ordem_Caixa"]}:
+                prioridade = 2
+            elif alturas_p == {s["Altura"]}:
+                prioridade = 1
+            else:
+                prioridade = 0
+
+            candidatos.append((prioridade, len(p["fileiras"]), idx, capacidade))
+
+        if not candidatos:
+            return False
+
+        # Primeiro maior compatibilidade; depois pallets mais cheios, para
+        # evitar deixar vários pallets parcialmente ocupados.
+        _, _, idx, capacidade = max(candidatos, key=lambda x: (x[0], x[1], -x[2]))
+        p = pallets[idx]
+        pegar = min(qtd, capacidade)
+        if pegar <= 0:
+            return False
+
+        p["itens"][sku] = p["itens"].get(sku, 0) + pegar
+        adicionar_fileira(p["fileiras"], sku, pegar, False)
+        s["Restante"] -= pegar
+
+        # Se o pallet ganhou uma sobra, deixa o tipo explicitamente como
+        # pallet final/misto, pois agora ele contém uma fileira parcial.
+        p["tipo"] = TIPO_FINAL
+        return True
+
+    # Primeiro tenta aproveitar pallets já criados.
+    for s in ordem_skus:
+        if s["Restante"] > 0:
+            adicionar_sobra_a_pallet_existente(s)
+
+    # Se ainda houver sobras, cria novos pallets finais.
+    while any(s["Restante"] > 0 for s in ordem_skus):
+        disponiveis = [s for s in ordem_skus if s["Restante"] > 0]
+        disponiveis.sort(
             key=lambda s: (-s["Ordem_Caixa"], -s["Altura"], s["SKU"])
         )
 
@@ -562,59 +620,52 @@ def processar_pallets_operador(carrinho, df_produtos):
         fileiras = []
         slots = ALTURA_MAXIMA_FILEIRAS
 
-        for s in candidatos:
+        # Primeiro consome fileiras completas.
+        for s in disponiveis:
+            if slots <= 0:
+                break
+
             sku = s["SKU"]
-            restante = sobras_restantes.get(sku, 0)
-            if restante <= 0 or slots <= 0:
+            cpf = s["Caixas_Por_Fileira"]
+            capacidade_restante = s["Capacidade_Max"] - itens.get(sku, 0)
+            completas = min(
+                s["Restante"] // cpf,
+                capacidade_restante // cpf,
+                slots,
+            )
+
+            if completas:
+                qtd = completas * cpf
+                itens[sku] = itens.get(sku, 0) + qtd
+                s["Restante"] -= qtd
+                slots -= completas
+                for _ in range(completas):
+                    adicionar_fileira(fileiras, sku, cpf, True)
+
+        # Depois usa as posições restantes para parciais.
+        for s in disponiveis:
+            if slots <= 0 or s["Restante"] <= 0:
                 continue
 
-            disponivel = s["Capacidade_Max"] - itens.get(sku, 0)
-            pegar = min(restante, disponivel)
+            sku = s["SKU"]
+            capacidade_restante = s["Capacidade_Max"] - itens.get(sku, 0)
+            pegar = min(s["Restante"], capacidade_restante)
             if pegar <= 0:
                 continue
 
-            # Cada SKU pode ocupar:
-            # - várias fileiras fechadas; e
-            # - no máximo uma fileira parcial.
-            completas, parcial = divmod(pegar, s["Caixas_Por_Fileira"])
-            fileiras_a_usar = completas + (1 if parcial else 0)
+            itens[sku] = itens.get(sku, 0) + pegar
+            s["Restante"] -= pegar
+            adicionar_fileira(fileiras, sku, pegar, False)
+            slots -= 1
 
-            # Respeita os slots físicos restantes.
-            if fileiras_a_usar > slots:
-                completas = min(completas, slots)
-                parcial = 0
-                fileiras_a_usar = completas
+        if not itens:
+            raise ValueError("Não foi possível acomodar as sobras restantes.")
 
-            if fileiras_a_usar <= 0:
-                continue
-
-            qtd_final = completas * s["Caixas_Por_Fileira"] + parcial
-
-            itens[sku] = itens.get(sku, 0) + qtd_final
-            sobras_restantes[sku] -= qtd_final
-            skus[sku]["Restante"] -= qtd_final
-            slots -= fileiras_a_usar
-
-            for _ in range(completas):
-                adicionar_fileira(
-                    fileiras, sku, s["Caixas_Por_Fileira"], True
-                )
-
-            if parcial:
-                adicionar_fileira(fileiras, sku, parcial, False)
-
-        if itens:
-            novo_pallet(TIPO_FINAL, itens, fileiras)
-        else:
-            raise ValueError(
-                "Não foi possível acomodar as sobras sem ultrapassar "
-                "a capacidade de 5 fileiras por pallet."
-            )
+        novo_pallet(TIPO_FINAL, itens, fileiras)
 
     # -------------------------------------------------------
-    # 8. Validação final
+    # 6. VALIDAÇÃO FINAL
     # -------------------------------------------------------
-    # Todo o pedido deve ter sido consumido.
     nao_consumidos = {
         sku: s["Restante"]
         for sku, s in skus.items()
@@ -625,7 +676,6 @@ def processar_pallets_operador(carrinho, df_produtos):
             f"Não foi possível distribuir todas as caixas: {nao_consumidos}"
         )
 
-    # Validações físicas antes de entregar o resultado.
     for p in pallets:
         if len(p["fileiras"]) > ALTURA_MAXIMA_FILEIRAS:
             raise ValueError(
@@ -639,40 +689,30 @@ def processar_pallets_operador(carrinho, df_produtos):
                 )
 
     # -------------------------------------------------------
-    # 9. DataFrame final
+    # 7. DATAFRAME FINAL
     # -------------------------------------------------------
     linhas = []
 
     for idx, p in enumerate(pallets, 1):
-        # Calcula a quantidade real de fileiras físicas do pallet.
         fileiras_pallet = len(p["fileiras"])
 
-        # Ordem da base para o topo pela numeração da caixa.
         itens_ord = sorted(
             p["itens"].items(),
-            key=lambda kv: (
-                -skus[kv[0]]["Ordem_Caixa"],
-                kv[0],
-            ),
+            key=lambda kv: (-skus[kv[0]]["Ordem_Caixa"], kv[0]),
         )
 
         for sku, qtd in itens_ord:
             s = skus[sku]
-
-            # Quantidade de fileiras completas daquele SKU neste pallet.
             fileiras_sku = sum(
-                1
-                for f in p["fileiras"]
+                1 for f in p["fileiras"]
                 if f["sku"] == sku and f["completa"]
             )
             parciais_sku = sum(
-                1
-                for f in p["fileiras"]
+                1 for f in p["fileiras"]
                 if f["sku"] == sku and not f["completa"]
             )
-            caixas_na_fileira_parcial = sum(
-                f["qtd"]
-                for f in p["fileiras"]
+            caixas_parcial = sum(
+                f["qtd"] for f in p["fileiras"]
                 if f["sku"] == sku and not f["completa"]
             )
 
@@ -689,7 +729,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "Fileiras no Pallet": fileiras_pallet,
                 "Fileiras Completas SKU": fileiras_sku,
                 "Fileiras Parciais SKU": parciais_sku,
-                "Caixas na Fileira Parcial": caixas_na_fileira_parcial,
+                "Caixas na Fileira Parcial": caixas_parcial,
                 "Total Peças": qtd * s["Pecas_Por_Caixa"],
                 "Ordem_Caixa": s["Ordem_Caixa"],
             })
