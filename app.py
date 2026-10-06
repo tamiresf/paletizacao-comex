@@ -415,6 +415,7 @@ def processar_pallets_operador(carrinho, df_produtos):
                 "tipo": tipo,
                 "altura": min(skus[k]["Altura"] for k in soltas),
                 "itens": soltas,
+                "solta": True,
             })
 
     # tipos com mais fileiras primeiro (empate: menor número de caixa)
@@ -432,17 +433,18 @@ def processar_pallets_operador(carrinho, df_produtos):
         return len(lista_fileiras) + 1 <= alt
 
     TIPO_FILEIRAS_SOBRAS = "Pallet Fechado - fileiras completas de sobras 🟢"
+    fechados_sobras = []
     parciais = []
     for altura in sorted({f["altura"] for _, fl in fileiras_todas for f in fl}, reverse=True):
         atual = []
         for _, fl in fileiras_todas:
             for f in [x for x in fl if x["altura"] == altura]:
                 if atual and not cabe(atual, f):
-                    novo_pallet(TIPO_FILEIRAS_SOBRAS, juntar(atual))
+                    fechados_sobras.append(list(atual))
                     atual = []
                 atual.append(f)
                 if len(atual) == min(ALTURA_MAXIMA_FILEIRAS, altura):
-                    novo_pallet(TIPO_FILEIRAS_SOBRAS, juntar(atual))
+                    fechados_sobras.append(list(atual))
                     atual = []
         if atual:
             parciais.append(atual)
@@ -470,6 +472,65 @@ def processar_pallets_operador(carrinho, df_produtos):
         else:
             blocos.append([solta])
 
+    # Exportação: pallet com sobras deve ter, sempre que possível, ao menos
+    # 2 fileiras COMPLETAS. Se faltar, traz fileiras completas de outros pallets
+    # (primeiro dos pallets de sobras; depois dos pallets mistos; por último dos
+    # pallets sequenciais de SKU único), sem deixar o doador com menos de 2 fileiras.
+    TIPO_REAJUSTADO = "Pallet Fechado - fileiras completas (reajustado) 🟢"
+    TIPO_SEQ_OU_MISTO = {TIPO_SEQUENCIAL: 2, TIPO_MESMA_ALTURA: 1, TIPO_ALTURAS_DIFERENTES: 1}
+
+    for bloco in reversed(blocos):
+        while sum(1 for f in bloco if not f.get("solta")) < 2:
+            tipos_bloco = {f["tipo"] for f in bloco}
+            alt_bloco = min([ALTURA_MAXIMA_FILEIRAS] + [f["altura"] for f in bloco])
+            # 1) doadores: pallets de sobras (listas de fileiras)
+            candidatos = []
+            for doador in fechados_sobras:
+                if len(doador) <= 2:
+                    continue
+                for f in doador:
+                    if cabe(bloco, f):
+                        prioridade = (
+                            0, 0 if f["tipo"] in tipos_bloco else 1,
+                            0 if f["altura"] == alt_bloco else 1, -len(doador),
+                        )
+                        candidatos.append((prioridade, doador, f))
+            if candidatos:
+                _, doador, f = min(candidatos, key=lambda c: c[0])
+                doador.remove(f)
+                bloco.append(f)
+                continue
+            # 2) doadores: pallets já formados nas etapas 1 e 2
+            candidatos = []
+            for idx_p, pal in enumerate(pallets):
+                if pal["tipo"] not in TIPO_SEQ_OU_MISTO and pal["tipo"] != TIPO_REAJUSTADO:
+                    continue
+                if fileiras_do_lote(pal["itens"]) <= 2:
+                    continue
+                for sku, qtd in pal["itens"].items():
+                    s = skus[sku]
+                    if qtd < s["Caixas_Por_Fileira"]:
+                        continue
+                    f = {"tipo": s["Ordem_Caixa"], "altura": s["Altura"],
+                         "itens": {sku: s["Caixas_Por_Fileira"]}}
+                    if cabe(bloco, f):
+                        prioridade = (
+                            TIPO_SEQ_OU_MISTO.get(pal["tipo"], 1),
+                            0 if s["Ordem_Caixa"] in tipos_bloco else 1,
+                            0 if s["Altura"] == alt_bloco else 1, -idx_p,
+                        )
+                        candidatos.append((prioridade, pal, sku, f))
+            if not candidatos:
+                break
+            _, pal, sku, f = min(candidatos, key=lambda c: c[0])
+            pal["itens"][sku] -= f["itens"][sku]
+            if pal["itens"][sku] == 0:
+                del pal["itens"][sku]
+            pal["tipo"] = TIPO_REAJUSTADO
+            bloco.append(f)
+
+    for fileiras_pallet_sobras in fechados_sobras:
+        novo_pallet(TIPO_FILEIRAS_SOBRAS, juntar(fileiras_pallet_sobras))
     for bloco in blocos:
         novo_pallet(TIPO_FINAL, juntar(bloco))
 
