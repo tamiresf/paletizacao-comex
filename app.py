@@ -52,14 +52,40 @@ st.markdown("---")
 
 
 # --- 2. CARREGAMENTO E TRATAMENTO DA BASE DE DADOS ---
+COLUNAS_ESSENCIAIS = [
+    "NUMERO DA CAIXA",
+    "QUANTIDADE DE PEÇAS",
+    "QUANTIDADE DE CAIXAS NO PALLET",
+    "QUANTIDADE DE CAIXAS POR FILEIRA",
+    "ALTURA",
+]
+
+
+def _fileiras_efetivas(cx_fileira, altura, capacidade):
+    """Fileiras que o SKU realmente comporta: a menor entre a ALTURA cadastrada e o
+    que a capacidade (caixas/pallet) permite. Sempre fileiras completas."""
+    cx_fileira = max(int(cx_fileira), 1)
+    return max(min(int(altura), max(int(capacidade) // cx_fileira, 1)), 1)
+
+
 @st.cache_data
 def carregar_base(caminho_excel):
     df = pd.read_excel(caminho_excel)
     df.columns = df.columns.str.strip()
 
+    # linhas sem dados de paletização (SKU cadastrado mas sem caixa/fileira/altura)
+    # NÃO entram: antes viravam "1 caixa por pallet" e distorciam o cálculo
+    df = df.dropna(subset=COLUNAS_ESSENCIAIS).copy()
+
     df["SKU"] = df["SKU"].astype(str).str.strip()
     df["NOME DO PRODUTO"] = df["NOME DO PRODUTO"].astype(str).str.strip()
-    df["NUMERO DA CAIXA"] = df["NUMERO DA CAIXA"].astype(str).str.strip()
+
+    # número da caixa vem como 1.0 no Excel -> "1"
+    num_caixa = pd.to_numeric(df["NUMERO DA CAIXA"], errors="coerce")
+    df["NUMERO DA CAIXA"] = [
+        str(int(n)) if pd.notna(n) else str(orig).strip()
+        for n, orig in zip(num_caixa, df["NUMERO DA CAIXA"])
+    ]
 
     colunas_numericas = [
         "QUANTIDADE DE PEÇAS",
@@ -83,7 +109,32 @@ def carregar_base(caminho_excel):
 
     df["Ordem_Caixa"] = df["NUMERO DA CAIXA"].apply(extrair_num_caixa)
 
-    return df
+    return df.reset_index(drop=True)
+
+
+@st.cache_data
+def diagnosticar_base(caminho_excel):
+    """Linhas vazias e SKUs cuja capacidade não bate com caixas/fileira x altura."""
+    bruto = pd.read_excel(caminho_excel)
+    bruto.columns = bruto.columns.str.strip()
+    vazios = int(bruto[COLUNAS_ESSENCIAIS].isna().any(axis=1).sum())
+    ok = bruto.dropna(subset=COLUNAS_ESSENCIAIS)
+    linhas = []
+    for _, r in ok.iterrows():
+        cpf = int(r["QUANTIDADE DE CAIXAS POR FILEIRA"])
+        alt = int(r["ALTURA"])
+        cap = int(r["QUANTIDADE DE CAIXAS NO PALLET"])
+        if cap != cpf * alt:
+            usa = _fileiras_efetivas(cpf, alt, cap)
+            linhas.append({
+                "SKU": str(r["SKU"]).strip(),
+                "Produto": str(r["NOME DO PRODUTO"]).strip(),
+                "Cx/pallet cadastrado": cap,
+                "Cx/fileira": cpf,
+                "Altura cadastrada": alt,
+                "Sistema usa": f"{usa} fileiras = {usa * max(cpf, 1)} cx",
+            })
+    return vazios, pd.DataFrame(linhas)
 
 
 caminhos_possiveis = ["COMEX.xlsx", "data/COMEX.xlsx"]
@@ -105,6 +156,22 @@ try:
 except Exception as e:
     st.error(f"Erro ao carregar a base de dados ({CAMINHO_EXCEL}): {e}")
     st.stop()
+
+_vazios, _inconsistentes = diagnosticar_base(CAMINHO_EXCEL)
+if _vazios or len(_inconsistentes):
+    with st.expander(
+        f"⚠️ Cadastro COMEX.xlsx: {_vazios} linhas sem dados (ignoradas) e "
+        f"{len(_inconsistentes)} SKUs com capacidade inconsistente",
+        expanded=False,
+    ):
+        st.caption(
+            "Linhas sem caixa/fileira/altura não aparecem na busca. Nos SKUs abaixo, a "
+            "capacidade cadastrada não é igual a caixas/fileira x altura; por segurança o "
+            "sistema usa a menor combinação (coluna 'Sistema usa'). Corrija a planilha "
+            "se o valor cadastrado estiver errado."
+        )
+        if len(_inconsistentes):
+            st.dataframe(_inconsistentes, use_container_width=True)
 
 # --- 3. ESTADO DA SESSÃO ---
 if "carrinho" not in st.session_state:
@@ -132,6 +199,16 @@ st.sidebar.info(f"""
 • **Capacidade Caixas / Pallet:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx  
 • **Capacidade Peças / Pallet:** {prod_info['QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET']} peças
 """)
+
+_cpf_sel = int(prod_info["QUANTIDADE DE CAIXAS POR FILEIRA"])
+if int(prod_info["QUANTIDADE DE CAIXAS NO PALLET"]) != _cpf_sel * int(prod_info["ALTURA"]):
+    _usa = _fileiras_efetivas(
+        _cpf_sel, prod_info["ALTURA"], prod_info["QUANTIDADE DE CAIXAS NO PALLET"]
+    )
+    st.sidebar.warning(
+        "Cadastro inconsistente: capacidade ≠ caixas/fileira × altura. "
+        f"O sistema usa {_usa} fileiras ({_usa * _cpf_sel} cx) por pallet."
+    )
 
 qtd_solicitada = st.sidebar.number_input(
     "Qtd de Caixas Solicitada:",
@@ -233,7 +310,9 @@ st.markdown("---")
 
 
 # --- 6. ALGORITMO COMEX - PALLETS SEQUENCIAIS, TIPO DE CAIXA E ALTURA ---
-ALTURA_MAXIMA_FILEIRAS = 5
+# Limite geral das fileiras; quem manda é a ALTURA de cada SKU na planilha (normal = 5;
+# a linha LANCERO é cadastrada com 6). O pallet respeita sempre o SKU mais baixo.
+ALTURA_MAXIMA_FILEIRAS = 6
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU unico, sequencial 🟢"
 TIPO_MESMA_ALTURA = "Pallet Fechado - mesma caixa e mesma altura 🟢"
@@ -290,7 +369,12 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
         sku = str(item["SKU"]).strip()
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
         cx_fileira = max(int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"]), 1)
-        altura = max(min(int(prod["ALTURA"]), ALTURA_MAXIMA_FILEIRAS), 1)
+        altura = min(
+            _fileiras_efetivas(
+                cx_fileira, prod["ALTURA"], prod["QUANTIDADE DE CAIXAS NO PALLET"]
+            ),
+            ALTURA_MAXIMA_FILEIRAS,
+        )
         skus[sku] = {
             "SKU": sku,
             "Produto": prod["NOME DO PRODUTO"],
@@ -299,7 +383,7 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
             "Pecas_Por_Caixa": int(prod["QUANTIDADE DE PEÇAS"]),
             "Caixas_Por_Fileira": cx_fileira,
             "Altura": altura,
-            "Capacidade_Max": max(int(prod["QUANTIDADE DE CAIXAS NO PALLET"]), 1),
+            "Capacidade_Max": cx_fileira * altura,  # sempre fileiras completas
             "Restante": int(item["Qtd_Caixas"]),
         }
 
@@ -513,9 +597,9 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
             for f in por_altura[h]:
                 cands = [
                     p for p in pals
-                    if p["lim"] <= h
-                    and len(p["rows"]) < p["lim"]
-                    and ocupacao(juntar(p["rows"] + [f])) <= 1
+                    if p["lim"] <= h and len(p["rows"]) < p["lim"]
+                    # (a capacidade em caixas fica garantida pelo limite de fileiras:
+                    #  cada SKU comporta exatamente 'caixas/fileira x altura')
                 ]
                 if cands:
                     p = min(cands, key=lambda p: (
@@ -1023,6 +1107,13 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
 
 
 # --- 8. EXECUÇÃO E RESULTADOS ---
+@st.cache_data(show_spinner="Calculando a melhor montagem dos pallets...")
+def calcular_pallets(itens, caminho_excel, _df_produtos):
+    """Cálculo em cache: mexer em checkbox/abas não recalcula tudo de novo."""
+    carrinho = [{"SKU": sku, "Qtd_Caixas": qtd} for sku, qtd in itens]
+    return processar_pallets_operador(carrinho, _df_produtos)
+
+
 if st.button("⚙️ CALCULAR E GERAR PALLETS"):
     if not st.session_state.carrinho:
         st.warning("Adicione itens ao pedido antes de calcular.")
@@ -1030,8 +1121,10 @@ if st.button("⚙️ CALCULAR E GERAR PALLETS"):
         st.session_state.processado = True
 
 if st.session_state.processado and st.session_state.carrinho:
-    df_pallets = processar_pallets_operador(
-        st.session_state.carrinho, df_produtos
+    df_pallets = calcular_pallets(
+        tuple((i["SKU"], int(i["Qtd_Caixas"])) for i in st.session_state.carrinho),
+        CAMINHO_EXCEL,
+        df_produtos,
     )
 
     agrupar = st.checkbox(
