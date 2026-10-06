@@ -357,8 +357,20 @@ def processar_pallets_operador(carrinho, df_produtos):
             and qtd_fileiras <= ALTURA_MAXIMA_FILEIRAS
         )
 
+    def capacidade_pallet_da_escolha(escolha):
+        """
+        Capacidade TOTAL permitida para um pallet.
+
+        Para um pallet com mais de um SKU, usamos o menor limite de
+        capacidade entre os SKUs participantes. Assim, nunca permitimos que
+        uma combinação mista ultrapasse a capacidade do SKU mais restritivo.
+        """
+        if not escolha:
+            return 0
+        return min(skus[sku]["Capacidade_Max"] for sku, _ in escolha)
+
     def gerar_escolhas(candidatos, limite=ALTURA_MAXIMA_FILEIRAS):
-        """Gera combinações de até 5 fileiras, no máximo uma parcela por SKU."""
+        """Gera combinações de até 5 fileiras respeitando capacidade TOTAL."""
         estados = {0: []}
 
         for s in candidatos:
@@ -376,6 +388,16 @@ def processar_pallets_operador(carrinho, df_produtos):
                 for n in range(1, min(max_n, limite - usadas) + 1):
                     total = usadas + n
                     nova = escolha + [(s["SKU"], n)]
+
+                    # A capacidade máxima é do PALLET, não apenas do SKU.
+                    # Para mistura, vale o menor limite entre os SKUs presentes.
+                    caixas_nova = sum(
+                        qtd_fileiras * skus[sku]["Caixas_Por_Fileira"]
+                        for sku, qtd_fileiras in nova
+                    )
+                    capacidade_nova = capacidade_pallet_da_escolha(nova)
+                    if caixas_nova > capacidade_nova:
+                        continue
 
                     anterior = novos.get(total)
                     if anterior is None:
@@ -450,6 +472,17 @@ def processar_pallets_operador(carrinho, df_produtos):
     def consumir(escolha, tipo_pallet):
         itens = {}
         fileiras = []
+
+        # Validação global antes de consumir qualquer estoque.
+        capacidade_pallet = capacidade_pallet_da_escolha(escolha)
+        total_caixas = sum(
+            n * skus[sku]["Caixas_Por_Fileira"] for sku, n in escolha
+        )
+        if total_caixas > capacidade_pallet:
+            raise ValueError(
+                f"Pallet inválido: {total_caixas} caixas > "
+                f"capacidade máxima permitida de {capacidade_pallet} caixas."
+            )
 
         for sku, n in escolha:
             s = skus[sku]
@@ -563,8 +596,13 @@ def processar_pallets_operador(carrinho, df_produtos):
             if len(p["fileiras"]) >= ALTURA_MAXIMA_FILEIRAS:
                 continue
 
-            usado_sku = p["itens"].get(sku, 0)
-            capacidade = s["Capacidade_Max"] - usado_sku
+            # A capacidade restante é GLOBAL do pallet. Para pallets mistos,
+            # o limite é o menor Capacidade_Max entre todos os SKUs presentes.
+            capacidades_pallet = [skus[x]["Capacidade_Max"] for x in p["itens"]]
+            capacidade_global = min(capacidades_pallet) if capacidades_pallet else s["Capacidade_Max"]
+            capacidade_global = min(capacidade_global, s["Capacidade_Max"])
+            total_atual = sum(p["itens"].values())
+            capacidade = capacidade_global - total_atual
             if capacidade <= 0:
                 continue
 
@@ -619,6 +657,7 @@ def processar_pallets_operador(carrinho, df_produtos):
         itens = {}
         fileiras = []
         slots = ALTURA_MAXIMA_FILEIRAS
+        capacidade_pallet = min(s["Capacidade_Max"] for s in disponiveis)
 
         # Primeiro consome fileiras completas.
         for s in disponiveis:
@@ -627,10 +666,12 @@ def processar_pallets_operador(carrinho, df_produtos):
 
             sku = s["SKU"]
             cpf = s["Caixas_Por_Fileira"]
-            capacidade_restante = s["Capacidade_Max"] - itens.get(sku, 0)
+            capacidade_restante_global = capacidade_pallet - sum(itens.values())
+            capacidade_restante_sku = s["Capacidade_Max"] - itens.get(sku, 0)
             completas = min(
                 s["Restante"] // cpf,
-                capacidade_restante // cpf,
+                capacidade_restante_global // cpf,
+                capacidade_restante_sku // cpf,
                 slots,
             )
 
@@ -648,8 +689,9 @@ def processar_pallets_operador(carrinho, df_produtos):
                 continue
 
             sku = s["SKU"]
-            capacidade_restante = s["Capacidade_Max"] - itens.get(sku, 0)
-            pegar = min(s["Restante"], capacidade_restante)
+            capacidade_restante_global = capacidade_pallet - sum(itens.values())
+            capacidade_restante_sku = s["Capacidade_Max"] - itens.get(sku, 0)
+            pegar = min(s["Restante"], capacidade_restante_global, capacidade_restante_sku)
             if pegar <= 0:
                 continue
 
@@ -680,6 +722,16 @@ def processar_pallets_operador(carrinho, df_produtos):
         if len(p["fileiras"]) > ALTURA_MAXIMA_FILEIRAS:
             raise ValueError(
                 f"O pallet gerado possui mais de {ALTURA_MAXIMA_FILEIRAS} fileiras."
+            )
+
+        capacidade_global = min(
+            skus[sku]["Capacidade_Max"] for sku in p["itens"]
+        ) if p["itens"] else 0
+        total_pallet = sum(p["itens"].values())
+        if total_pallet > capacidade_global:
+            raise ValueError(
+                f"Pallet inválido: {total_pallet} caixas > "
+                f"capacidade máxima de {capacidade_global} caixas."
             )
 
         for sku, qtd in p["itens"].items():
