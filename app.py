@@ -539,7 +539,7 @@ def gerar_pdf(df_pallets, cliente, data_str):
         pdf.cell(
             0,
             8,
-            f"{p_id} | Tipo: {tipo_limpo} | Total de Caixas: {total_cx} cx ({total_pecas} peças) | Fileiras: {int(df_p['Fileiras no Pallet'].iloc[0])}",
+            f"{p_id} | Tipo: {tipo_limpo} | Total de Caixas: {total_cx} cx ({total_pecas} peças)",
             border="B",
         )
         pdf.ln(10)
