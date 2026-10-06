@@ -236,7 +236,8 @@ MINIMO_FILEIRAS_ULTIMO_PALLET = 2
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU unico, sequencial 🟢"
 TIPO_MESMA_ALTURA = "Pallet Fechado - mesma caixa e mesma altura 🟢"
 TIPO_ALTURAS_DIFERENTES = "Pallet Fechado - mesma caixa, alturas diferentes 🟡"
-TIPO_FINAL = "Pallet Misto Inteligente / Final 🟠"
+TIPO_INTERMEDIARIO_FECHADO = "Pallet Fechado - fileiras completas 🟢"
+TIPO_FINAL = "Pallet Misto Inteligente / Final (Permite Sobras) 🟠"
 
 
 def _achar_combinacao_exata(unidades, alvo):
@@ -373,51 +374,31 @@ def processar_pallets_operador(carrinho, df_produtos):
                 if achou:
                     break
 
-    # ETAPA 3: Montagem inteligente de sobras e pallets finais por tipo de caixa (respeitando no máximo 2 tipos por pallet e completando fileiras)
-    def montar_fileiras_e_sobras(tipo):
+    # ETAPA 3: Separação estrita entre fileiras completas (para pallets intermediários) e sobras (para o pallet final)
+    fileiras_completas_todas = []
+    fileiras_incompletas_todas = []
+
+    for tipo in tipos:
         cpf = cx_fileira_do_tipo(tipo)
-        sobras = [
-            s
-            for s in ordem_skus
-            if s["Ordem_Caixa"] == tipo and s["Restante"] > 0
-        ]
-        fileiras = []
-        residuos = []
-
-        def consumir_e_completar(fila):
-            atual, cheia = {}, 0
-            for sku, qtd in fila:
-                while qtd > 0:
-                    pega = min(cpf - cheia, qtd)
-                    atual[sku] = atual.get(sku, 0) + pega
-                    cheia += pega
-                    qtd -= pega
-                    if cheia == cpf:
-                        alt = min(skus[k]["Altura"] for k in atual)
-                        fileiras.append({
-                            "tipo": tipo,
-                            "altura": alt,
-                            "itens": atual,
-                        })
-                        atual, cheia = {}, 0
-            return atual, cheia
-
-        # Tenta formar fileiras completas por SKU primeiro
-        for s in sobras:
+        skus_tipo = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0]
+        
+        # Primeiro isola as fileiras completas puras por SKU
+        for s in skus_tipo:
             qtd = s["Restante"]
             restantes_sku = s["Restante"] % cpf
             completas = qtd - restantes_sku
             if completas > 0:
                 num_fil = completas // cpf
-                fileiras.append({
+                fileiras_completas_todas.append({
                     "tipo": tipo,
                     "altura": s["Altura"],
                     "itens": {s["SKU"]: completas},
+                    "incompleta": False
                 })
                 s["Restante"] = restantes_sku
 
-        # Coleta o que sobrou para tentar complementar com SKUs do mesmo tipo e altura
-        sobras_ativas = [(s["SKU"], s["Restante"], s["Altura"]) for s in sobras if s["Restante"] > 0]
+        # Tenta combinar sobras do mesmo tipo e altura para formar fileiras completas adicionais
+        sobras_ativas = [(s["SKU"], s["Restante"], s["Altura"]) for s in skus_tipo if s["Restante"] > 0]
         sobras_ativas.sort(key=lambda x: (-x[2], x[0]))
 
         i = 0
@@ -427,12 +408,10 @@ def processar_pallets_operador(carrinho, df_produtos):
                 i += 1
                 continue
             
-            # Tenta preencher uma fileira com SKU1
             fileira_atual = {sku1: min(cpf, qtd1)}
             cheia = fileira_atual[sku1]
             qtd1 -= fileira_atual[sku1]
             
-            # Se a fileira não estiver cheia, busca outro SKU do mesmo tipo e altura para completar
             if cheia < cpf:
                 for j in range(i + 1, len(sobras_ativas)):
                     sku2, qtd2, alt2 = sobras_ativas[j]
@@ -445,29 +424,31 @@ def processar_pallets_operador(carrinho, df_produtos):
                         if cheia == cpf:
                             break
 
-            fileiras.append({
-                "tipo": tipo,
-                "altura": min(skus[k]["Altura"] for k in fileira_atual),
-                "itens": fileira_atual,
-            })
-            sobras_ativas[i] = (sku1, qtd1, alt1)
-            if qtd1 == 0:
+            if cheia == cpf:
+                fileiras_completas_todas.append({
+                    "tipo": tipo,
+                    "altura": min(skus[k]["Altura"] for k in fileira_atual),
+                    "itens": fileira_atual,
+                    "incompleta": False
+                })
+                sobras_ativas[i] = (sku1, qtd1, alt1)
+                if qtd1 == 0:
+                    i += 1
+            else:
+                # Se após as tentativas ainda não formou fileira completa, vai para as sobras reais (último pallet)
+                for sku_inc, qtd_inc in fileira_atual.items():
+                    fileiras_incompletas_todas.append({
+                        "tipo": tipo,
+                        "altura": skus[sku_inc]["Altura"],
+                        "itens": {sku_inc: qtd_inc},
+                        "incompleta": True
+                    })
+                sobras_ativas[i] = (sku1, 0, alt1)
                 i += 1
 
-        for s in sobras:
+        for s in skus_tipo:
             s["Restante"] = 0
-        return fileiras
 
-    fileiras_todas = []
-    for tipo in tipos:
-        fl = montar_fileiras_e_sobras(tipo)
-        if fl:
-            fileiras_todas.extend(fl)
-
-    # Agrupamento em pallets respeitando a capacidade máxima de 5 fileiras por pallet e limite de até 2 tipos de caixa por pallet
-    blocos = []
-    bloco_atual = []
-    
     def juntar(lista_fileiras):
         itens = {}
         for f in lista_fileiras:
@@ -485,47 +466,46 @@ def processar_pallets_operador(carrinho, df_produtos):
                 return True
         return False
 
-    for f in fileiras_todas:
+    # Montagem dos pallets intermediários estritamente com fileiras completas (sem sobras)
+    blocos_intermediarios = []
+    bloco_atual = []
+
+    for f in fileiras_completas_todas:
         tipos_no_bloco = {skus[sku]["Ordem_Caixa"] for item in bloco_atual for sku in item["itens"]}
         tipos_no_bloco.add(f["tipo"])
         
-        # Limite máximo de 5 fileiras OU mais de 2 tipos de caixa diferentes OU estouro de capacidade do SKU
         if (
             len(bloco_atual) >= ALTURA_MAXIMA_FILEIRAS
             or len(tipos_no_bloco) > 2
             or capacidade_max_atingida(bloco_atual, f)
         ):
             if bloco_atual:
-                blocos.append(bloco_atual)
+                blocos_intermediarios.append(bloco_atual)
             bloco_atual = [f]
         else:
             bloco_atual.append(f)
 
     if bloco_atual:
-        blocos.append(bloco_atual)
+        blocos_intermediarios.append(bloco_atual)
 
-    # Regra: Garantir que o último pallet tenha no mínimo 2 fileiras, se possível realocando do penúltimo
-    if len(blocos) > 1 and len(blocos[-1]) < MINIMO_FILEIRAS_ULTIMO_PALLET:
-        penultimo = blocos[-2]
-        ultimo = blocos[-1]
-        while (
-            len(ultimo) < MINIMO_FILEIRAS_ULTIMO_PALLET
-            and len(penultimo) > MINIMO_FILEIRAS_ULTIMO_PALLET
-        ):
-            f_mov = penultimo.pop()
-            tipos_ultimo = {skus[sku]["Ordem_Caixa"] for item in ultimo for sku in item["itens"]}
-            tipos_mov = f_mov["tipo"]
-            tipos_ultimo.add(tipos_mov)
-            
-            if len(tipos_ultimo) <= 2 and not capacidade_max_atingida(ultimo, f_mov) and len(ultimo) + 1 <= ALTURA_MAXIMA_FILEIRAS:
-                ultimo.append(f_mov)
+    # Criação dos pallets intermediários fechados
+    for bloco in blocos_intermediarios:
+        novo_pallet(TIPO_INTERMEDIARIO_FECHADO, juntar(bloco))
+
+    # Montagem do último pallet (onde entram as sobras e fileiras incompletas)
+    if fileiras_incompletas_todas:
+        bloco_final = []
+        for f in fileiras_incompletas_todas:
+            tipos_no_bloco = {skus[sku]["Ordem_Caixa"] for item in bloco_final for sku in item["itens"]}
+            tipos_no_bloco.add(f["tipo"])
+            if len(bloco_final) >= ALTURA_MAXIMA_FILEIRAS or len(tipos_no_bloco) > 2 or capacidade_max_atingida(bloco_final, f):
+                if bloco_final:
+                    novo_pallet(TIPO_FINAL, juntar(bloco_final))
+                bloco_final = [f]
             else:
-                penultimo.append(f_mov)
-                break
-
-    # Criação final dos pallets baseados nos blocos inteligentes
-    for bloco in blocos:
-        novo_pallet(TIPO_FINAL, juntar(bloco))
+                bloco_final.append(f)
+        if bloco_final:
+            novo_pallet(TIPO_FINAL, juntar(bloco_final))
 
     linhas = []
     for idx, p in enumerate(pallets, 1):
