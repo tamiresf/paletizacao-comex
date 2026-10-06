@@ -460,4 +460,259 @@ def processar_pallets_operador(carrinho, df_produtos):
 
     fileiras_todas = []
     for tipo in tipos:
-        fl = montar_fileiras_e_sobras
+        fl = montar_fileiras_e_sobras(tipo)
+        if fl:
+            fileiras_todas.extend(fl)
+
+    # Agrupamento em pallets respeitando a capacidade máxima de 5 fileiras por pallet e limite de até 2 tipos de caixa por pallet
+    blocos = []
+    bloco_atual = []
+    
+    def juntar(lista_fileiras):
+        itens = {}
+        for f in lista_fileiras:
+            if f and "itens" in f:
+                for sku, qtd in f["itens"].items():
+                    itens[sku] = itens.get(sku, 0) + qtd
+        return itens
+
+    def capacidade_max_atingida(lista_fileiras, nova_fileira):
+        temp_itens = juntar(
+            lista_fileiras + ([nova_fileira] if nova_fileira else [])
+        )
+        for sku, qtd in temp_itens.items():
+            if qtd > skus[sku]["Capacidade_Max"]:
+                return True
+        return False
+
+    for f in fileiras_todas:
+        tipos_no_bloco = {skus[sku]["Ordem_Caixa"] for item in bloco_atual for sku in item["itens"]}
+        tipos_no_bloco.add(f["tipo"])
+        
+        # Limite máximo de 5 fileiras OU mais de 2 tipos de caixa diferentes OU estouro de capacidade do SKU
+        if (
+            len(bloco_atual) >= ALTURA_MAXIMA_FILEIRAS
+            or len(tipos_no_bloco) > 2
+            or capacidade_max_atingida(bloco_atual, f)
+        ):
+            if bloco_atual:
+                blocos.append(bloco_atual)
+            bloco_atual = [f]
+        else:
+            bloco_atual.append(f)
+
+    if bloco_atual:
+        blocos.append(bloco_atual)
+
+    # Regra: Garantir que o último pallet tenha no mínimo 2 fileiras, se possível realocando do penúltimo
+    if len(blocos) > 1 and len(blocos[-1]) < MINIMO_FILEIRAS_ULTIMO_PALLET:
+        penultimo = blocos[-2]
+        ultimo = blocos[-1]
+        while (
+            len(ultimo) < MINIMO_FILEIRAS_ULTIMO_PALLET
+            and len(penultimo) > MINIMO_FILEIRAS_ULTIMO_PALLET
+        ):
+            f_mov = penultimo.pop()
+            tipos_ultimo = {skus[sku]["Ordem_Caixa"] for item in ultimo for sku in item["itens"]}
+            tipos_mov = f_mov["tipo"]
+            tipos_ultimo.add(tipos_mov)
+            
+            if len(tipos_ultimo) <= 2 and not capacidade_max_atingida(ultimo, f_mov) and len(ultimo) + 1 <= ALTURA_MAXIMA_FILEIRAS:
+                ultimo.append(f_mov)
+            else:
+                penultimo.append(f_mov)
+                break
+
+    # Criação final dos pallets baseados nos blocos inteligentes
+    for bloco in blocos:
+        novo_pallet(TIPO_FINAL, juntar(bloco))
+
+    linhas = []
+    for idx, p in enumerate(pallets, 1):
+        itens_ord = sorted(
+            p["itens"].items(),
+            key=lambda kv: (-skus[kv[0]]["Ordem_Caixa"], kv[0]),
+        )
+        fileiras_pallet = fileiras_do_lote(p["itens"])
+        for sku, qtd in itens_ord:
+            s = skus[sku]
+            linhas.append({
+                "Pallet_Num": idx,
+                "ID": f"Pallet {idx:02d}",
+                "Tipo": p["tipo"],
+                "SKU": sku,
+                "Produto": s["Produto"],
+                "Nº Caixa": s["Nº Caixa"],
+                "Caixas_Por_Fileira": s["Caixas_Por_Fileira"],
+                "Quantidade_Fileiras": s["Altura"],
+                "Qtd Caixas": qtd,
+                "Fileiras no Pallet": fileiras_pallet,
+                "Total Peças": qtd * s["Pecas_Por_Caixa"],
+                "Ordem_Caixa": s["Ordem_Caixa"],
+            })
+    return pd.DataFrame(linhas)
+
+
+# --- 7. GERADOR DE PDF COM CONTROLE DE QUEBRA DE PÁGINA ---
+def gerar_pdf(df_pallets, cliente, data_str):
+    pdf = FPDF()
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "MUSTAD - Relatório de Paletização", align="C")
+    pdf.ln(7)
+
+    nome_cliente_formatado = cliente.strip() if cliente else "Não Informado"
+    cliente_pdf = (
+        nome_cliente_formatado.encode("latin-1", "replace").decode("latin-1")
+    )
+
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 6, f"Cliente: {cliente_pdf}", align="C")
+    pdf.ln(5)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 5, f"Data de Emissão: {data_str}", align="C")
+    pdf.ln(12)
+
+    pallets_ordenados = df_pallets.sort_values("Pallet_Num")["ID"].unique()
+
+    for p_id in pallets_ordenados:
+        df_p = df_pallets[df_pallets["ID"] == p_id]
+        tipo_raw = str(df_p["Tipo"].iloc[0])
+        tipo_limpo = (
+            tipo_raw.replace("🟢", "")
+            .replace("🟡", "")
+            .replace("🟠", "")
+            .strip()
+        )
+        total_cx = int(df_p["Qtd Caixas"].sum())
+        total_pecas = int(df_p["Total Peças"].sum())
+
+        linhas_tabela = len(df_p)
+        altura_bloco = 20 + (linhas_tabela + 1) * 6
+
+        if pdf.get_y() + altura_bloco > 270:
+            pdf.add_page()
+
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(
+            0,
+            8,
+            f"{p_id} | Tipo: {tipo_limpo} | Total de Caixas: {total_cx} cx ({total_pecas} peças)",
+            border="B",
+        )
+        pdf.ln(10)
+
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.cell(25, 6, "SKU", border=1)
+        pdf.cell(65, 6, "Produto", border=1)
+        pdf.cell(18, 6, "N. Caixa", border=1)
+        pdf.cell(20, 6, "Qtd Caixas", border=1)
+        pdf.cell(22, 6, "Qtd Peças", border=1)
+        pdf.cell(20, 6, "Cx/Fileira", border=1)
+        pdf.cell(20, 6, "Fileiras", border=1)
+        pdf.ln()
+
+        pdf.set_font("Helvetica", size=8)
+        for _, row in df_p.iterrows():
+            prod_nome = (
+                str(row["Produto"])
+                .encode("latin-1", "replace")
+                .decode("latin-1")[:32]
+            )
+            pdf.cell(25, 6, str(row["SKU"]), border=1)
+            pdf.cell(65, 6, prod_nome, border=1)
+            pdf.cell(18, 6, str(row["Nº Caixa"]), border=1)
+            pdf.cell(20, 6, str(row["Qtd Caixas"]), border=1)
+            pdf.cell(22, 6, str(row["Total Peças"]), border=1)
+            pdf.cell(20, 6, str(row["Caixas_Por_Fileira"]), border=1)
+            pdf.cell(20, 6, str(row["Quantidade_Fileiras"]), border=1)
+            pdf.ln()
+
+        pdf.ln(6)
+
+    return bytes(pdf.output())
+
+
+# --- 8. EXECUÇÃO E RESULTADOS ---
+if st.button("⚙️ CALCULAR E GERAR PALLETS"):
+    if not st.session_state.carrinho:
+        st.warning("Adicione itens ao pedido antes de calcular.")
+    else:
+        st.session_state.processado = True
+
+if st.session_state.processado and st.session_state.carrinho:
+    df_pallets = processar_pallets_operador(
+        st.session_state.carrinho, df_produtos
+    )
+
+    st.subheader("📦 Detalhamento Individual por Pallet")
+    pallets_unicos = df_pallets.sort_values("Pallet_Num")["ID"].unique()
+    st.success(f"**Total de Pallets Gerados:** {len(pallets_unicos)}")
+
+    if FPDF_DISPONIVEL:
+        try:
+            data_atual = datetime.now()
+            data_formatada_pdf = data_atual.strftime("%d/%m/%Y")
+            data_formatada_arquivo = data_atual.strftime("%d-%m-%Y")
+
+            cliente_informado = nome_cliente_input.strip()
+            cliente_limpo = (
+                re.sub(r'[\\/*?:"<>|]', "", cliente_informado)
+                if cliente_informado
+                else "CLIENTE"
+            )
+
+            nome_arquivo_pdf = (
+                f"PALETIZACAO_{cliente_limpo}_{data_formatada_arquivo}.pdf"
+            )
+
+            pdf_bytes = gerar_pdf(
+                df_pallets, cliente_informado, data_formatada_pdf
+            )
+
+            st.download_button(
+                label="📄 Baixar Relatório em PDF",
+                data=pdf_bytes,
+                file_name=nome_arquivo_pdf,
+                mime="application/pdf",
+                key="download_pdf_btn",
+            )
+        except Exception as err:
+            st.error(f"Erro ao gerar PDF: {err}")
+
+    st.markdown("---")
+
+    for p_id in pallets_unicos:
+        df_p = df_pallets[df_pallets["ID"] == p_id]
+        tipo_pallet = df_p["Tipo"].iloc[0]
+        total_cx = int(df_p["Qtd Caixas"].sum())
+        total_pc = int(df_p["Total Peças"].sum())
+
+        with st.expander(
+            f"📌 {p_id} - Total de Caixas: {total_cx} cx | Total de Peças: {total_pc} peças | {int(df_p['Fileiras no Pallet'].iloc[0])} fileiras ({tipo_pallet})",
+            expanded=True,
+        ):
+            st.markdown(
+                "**Composição detalhada (organizada da base para o topo - fileiras completas e ordenadas por numeração de caixa):**"
+            )
+            st.dataframe(
+                df_p[[
+                    "SKU",
+                    "Produto",
+                    "Nº Caixa",
+                    "Qtd Caixas",
+                    "Total Peças",
+                    "Fileiras no Pallet",
+                    "Caixas_Por_Fileira",
+                    "Quantidade_Fileiras",
+                ]],
+                use_container_width=True,
+            )
+
+            str_destaque = f"""
+                <div style="text-align: right;">
+                    <span class="total-caixas-destaque">📦 Total de Caixas do Pallet: {total_cx} cx</span>
+                </div>
+                """
+            st.markdown(str_destaque, unsafe_allow_html=True)
