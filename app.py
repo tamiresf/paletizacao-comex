@@ -223,7 +223,7 @@ else:
 
 st.markdown("---")
 
-# --- 6. REGRA DE PALETIZAÇÃO OTIMIZADA (MÍNIMO 2 FILEIRAS NO ÚLTIMO PALLET + EQUILÍBRIO) ---
+# --- 6. REGRA DE PALETIZAÇÃO OTIMIZADA (MENOR PALLET POR ÚLTIMO) ---
 ALTURA_MAXIMA_GERAL = 5
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU único, sequencial"
@@ -451,8 +451,13 @@ def _gerar_pallets(carrinho, df_produtos):
                     if f_ult >= 2.0:
                         break
 
-    # Filtrar pallets limpos após rebalanceamento
+    # Filtrar pallets limpos
     pallets = [p for p in pallets if sum(p["itens"].values()) > 0]
+
+    # Ordenar os pallets de modo que o pallet com a MENOR quantidade total de caixas seja O ÚLTIMO
+    if len(pallets) > 1:
+        # Mantém os pallets cheios no início e coloca o de menor quantidade por último
+        pallets.sort(key=lambda p: (sum(p["itens"].values()) == min(sum(x["itens"].values()) for x in pallets), -sum(p["itens"].values())))
 
     linhas = []
     for idx, p in enumerate(pallets, 1):
