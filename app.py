@@ -424,14 +424,17 @@ def _gerar_pallets(carrinho, df_produtos):
 
     linhas = []
     for idx, p in enumerate(pallets, 1):
-        # Garante que fileiras fechadas fiquem no início e caixas soltas (sobras) no final
-        def chave_ordenacao(kv):
+        # Regra de Ordenação Física do Pallet:
+        # 1. Fileiras completas na base -> Caixas com numeração maior (-Ordem_Caixa) na base, menor no topo.
+        # 2. Sobras/caixas soltas fracionadas -> Sempre por último (no topo do pallet).
+        def chave_empilhamento(kv):
             sku, qtd = kv
             s = skus[sku]
-            eh_sobra_solta = 1 if (qtd % s["Caixas_Por_Fileira"] != 0) else 0
-            return (eh_sobra_solta, -s["Ordem_Caixa"], sku)
+            eh_sobra_fracionada = 1 if (qtd % s["Caixas_Por_Fileira"] != 0) else 0
+            # Retorna tupla: (0 para fileira cheia / 1 para sobra, -Ordem_Caixa para caixa maior na base, sku)
+            return (eh_sobra_fracionada, -s["Ordem_Caixa"], sku)
 
-        itens_ord = sorted(p["itens"].items(), key=chave_ordenacao)
+        itens_ord = sorted(p["itens"].items(), key=chave_empilhamento)
         fileiras_pallet = fileiras_do_lote(p["itens"])
         for sku, qtd in itens_ord:
             s = skus[sku]
