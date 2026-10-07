@@ -69,7 +69,7 @@ def _fileiras_efetivas(cx_fileira, altura, capacidade):
 
 
 @st.cache_data
-def carregar_base(caminho_excel):
+def carregar_base(caminho_excel, versao=None):
     df = pd.read_excel(caminho_excel)
     df.columns = df.columns.str.strip()
 
@@ -113,28 +113,33 @@ def carregar_base(caminho_excel):
 
 
 @st.cache_data
-def diagnosticar_base(caminho_excel):
-    """Linhas vazias e SKUs cuja capacidade não bate com caixas/fileira x altura."""
-    bruto = pd.read_excel(caminho_excel)
+def diagnosticar_base(caminho_excel, versao=None):
+    """Problemas de cadastro da planilha, SKU a SKU (só o que está nela AGORA).
+    'versao' (data de gravação do arquivo) entra na chave do cache: ao salvar a
+    planilha de novo, o diagnóstico é refeito sozinho."""
+    planilha = pd.ExcelFile(caminho_excel)
+    aba = planilha.sheet_names[0]
+    bruto = pd.read_excel(planilha, sheet_name=aba)
     bruto.columns = bruto.columns.str.strip()
-    vazios = int(bruto[COLUNAS_ESSENCIAIS].isna().any(axis=1).sum())
-    ok = bruto.dropna(subset=COLUNAS_ESSENCIAIS)
-    linhas = []
-    for _, r in ok.iterrows():
-        cpf = int(r["QUANTIDADE DE CAIXAS POR FILEIRA"])
-        alt = int(r["ALTURA"])
+    bruto = bruto[bruto["SKU"].notna()]
+
+    sem_dados, inconsistentes = [], []
+    for _, r in bruto.iterrows():
+        sku = str(r["SKU"]).strip()
+        produto = str(r["NOME DO PRODUTO"]).strip()
+        faltando = [c for c in COLUNAS_ESSENCIAIS if pd.isna(r[c])]
+        if faltando:
+            sem_dados.append({"sku": sku, "produto": produto, "faltando": faltando})
+            continue
+        cpf, alt = int(r["QUANTIDADE DE CAIXAS POR FILEIRA"]), int(r["ALTURA"])
         cap = int(r["QUANTIDADE DE CAIXAS NO PALLET"])
         if cap != cpf * alt:
             usa = _fileiras_efetivas(cpf, alt, cap)
-            linhas.append({
-                "SKU": str(r["SKU"]).strip(),
-                "Produto": str(r["NOME DO PRODUTO"]).strip(),
-                "Cx/pallet cadastrado": cap,
-                "Cx/fileira": cpf,
-                "Altura cadastrada": alt,
-                "Sistema usa": f"{usa} fileiras = {usa * max(cpf, 1)} cx",
+            inconsistentes.append({
+                "sku": sku, "produto": produto, "cap": cap, "cpf": cpf, "alt": alt,
+                "usa_fil": usa, "usa_cx": usa * max(cpf, 1),
             })
-    return vazios, pd.DataFrame(linhas)
+    return aba, sem_dados, inconsistentes
 
 
 caminhos_possiveis = ["COMEX.xlsx", "data/COMEX.xlsx"]
@@ -151,27 +156,41 @@ if not CAMINHO_EXCEL:
     )
     st.stop()
 
+VERSAO_PLANILHA = os.path.getmtime(CAMINHO_EXCEL)
+
 try:
-    df_produtos = carregar_base(CAMINHO_EXCEL)
+    df_produtos = carregar_base(CAMINHO_EXCEL, VERSAO_PLANILHA)
 except Exception as e:
     st.error(f"Erro ao carregar a base de dados ({CAMINHO_EXCEL}): {e}")
     st.stop()
 
-_vazios, _inconsistentes = diagnosticar_base(CAMINHO_EXCEL)
-if _vazios or len(_inconsistentes):
+_aba, _sem_dados, _inconsistentes = diagnosticar_base(CAMINHO_EXCEL, VERSAO_PLANILHA)
+st.caption(
+    f"📄 Planilha lida: {CAMINHO_EXCEL} (aba '{_aba}') - salva em "
+    f"{datetime.fromtimestamp(VERSAO_PLANILHA).strftime('%d/%m/%Y %H:%M')}"
+)
+if _sem_dados or _inconsistentes:
     with st.expander(
-        f"⚠️ Cadastro COMEX.xlsx: {_vazios} linhas sem dados (ignoradas) e "
-        f"{len(_inconsistentes)} SKUs com capacidade inconsistente",
-        expanded=False,
+        f"⚠️ Erro na planilha {CAMINHO_EXCEL}: {len(_sem_dados) + len(_inconsistentes)} SKU(s) "
+        "com cadastro incorreto",
+        expanded=True,
     ):
+        for p in _sem_dados:
+            st.markdown(
+                f"- **Erro na planilha - SKU {p['sku']}** ({p['produto']}): faltam dados "
+                f"({', '.join(c.lower() for c in p['faltando'])}). SKU ignorado: não aparece na busca."
+            )
+        for p in _inconsistentes:
+            st.markdown(
+                f"- **Erro na planilha - SKU {p['sku']}** ({p['produto']}): capacidade "
+                f"cadastrada {p['cap']} cx, mas {p['cpf']} cx/fileira × altura {p['alt']} = "
+                f"{p['cpf'] * p['alt']} cx. O sistema está usando {p['usa_fil']} fileiras "
+                f"({p['usa_cx']} cx) por pallet."
+            )
         st.caption(
-            "Linhas sem caixa/fileira/altura não aparecem na busca. Nos SKUs abaixo, a "
-            "capacidade cadastrada não é igual a caixas/fileira x altura; por segurança o "
-            "sistema usa a menor combinação (coluna 'Sistema usa'). Corrija a planilha "
-            "se o valor cadastrado estiver errado."
+            "Corrija a linha na planilha e salve: o aviso atualiza sozinho na próxima "
+            "interação (se o app rodar na nuvem, é preciso publicar a planilha nova)."
         )
-        if len(_inconsistentes):
-            st.dataframe(_inconsistentes, use_container_width=True)
 
 # --- 3. ESTADO DA SESSÃO ---
 if "carrinho" not in st.session_state:
@@ -1108,7 +1127,7 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
 
 # --- 8. EXECUÇÃO E RESULTADOS ---
 @st.cache_data(show_spinner="Calculando a melhor montagem dos pallets...")
-def calcular_pallets(itens, caminho_excel, _df_produtos):
+def calcular_pallets(itens, caminho_excel, versao, _df_produtos):
     """Cálculo em cache: mexer em checkbox/abas não recalcula tudo de novo."""
     carrinho = [{"SKU": sku, "Qtd_Caixas": qtd} for sku, qtd in itens]
     return processar_pallets_operador(carrinho, _df_produtos)
@@ -1124,6 +1143,7 @@ if st.session_state.processado and st.session_state.carrinho:
     df_pallets = calcular_pallets(
         tuple((i["SKU"], int(i["Qtd_Caixas"])) for i in st.session_state.carrinho),
         CAMINHO_EXCEL,
+        VERSAO_PLANILHA,
         df_produtos,
     )
 
