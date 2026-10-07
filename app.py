@@ -223,7 +223,7 @@ else:
 
 st.markdown("---")
 
-# --- 6. REGRA DE PALETIZAÇÃO COMEX (TRAVA DE 5 FILEIRAS E ALOCAÇÃO PENÚLTIMO/ÚLTIMO PALLET) ---
+# --- 6. REGRA DE PALETIZAÇÃO OTIMIZADA (MÍNIMO 2 FILEIRAS NO ÚLTIMO PALLET + EQUILÍBRIO) ---
 ALTURA_MAXIMA_GERAL = 5
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU único, sequencial"
@@ -340,7 +340,7 @@ def _gerar_pallets(carrinho, df_produtos):
                     break
                 fechar(escolha, TIPO_MESMA_ALTURA)
 
-    # 3. FORMANDO FILEIRAS FECHADAS NO PENÚLTIMO PALLET A PARTIR DAS SOBRAS
+    # 3. FORMANDO FILEIRAS FECHADAS DE SOBRAS E ACÚMULO DE CAIXAS SOLTAS
     fileiras_completas_sobras = []
     caixas_soltas_acumuladas = {}
 
@@ -364,7 +364,7 @@ def _gerar_pallets(carrinho, df_produtos):
 
             s["Restante"] = 0
 
-    # Tenta combinar caixas soltas do mesmo tipo para fechar fileiras completas adicionais
+    # Combina caixas soltas para formar fileiras completas adicionais
     if caixas_soltas_acumuladas:
         for tipo in tipos:
             cpf = cx_fileira_do_tipo(tipo)
@@ -401,75 +401,58 @@ def _gerar_pallets(carrinho, df_produtos):
                 itens[sku] = itens.get(sku, 0) + qtd
         return itens
 
-    # Empacota as fileiras de sobras sem estourar o limite de 5 fileiras por pallet
     curr_pallet_rows = []
-    curr_fileiras_count = 0.0
-
     for f in fileiras_completas_sobras:
         limite_pallet = min(min([skus[sku]["Altura"] for sku in f["itens"].keys()]), ALTURA_MAXIMA_GERAL)
 
-        if (curr_fileiras_count + 1.0 > limite_pallet) and curr_pallet_rows:
+        if len(curr_pallet_rows) >= limite_pallet and curr_pallet_rows:
             novo_pallet(TIPO_FILEIRAS_SOBRAS, juntar(curr_pallet_rows))
             curr_pallet_rows = []
-            curr_fileiras_count = 0.0
 
         curr_pallet_rows.append(f)
-        curr_fileiras_count += 1.0
 
     if curr_pallet_rows:
         novo_pallet(TIPO_FILEIRAS_SOBRAS, juntar(curr_pallet_rows))
 
-    # 4. ALOCAÇÃO EQUILIBRADA PARA O PENÚLTIMO E ÚLTIMO PALLET (Máx 5 Fileiras e Limite de Caixas)
     if caixas_soltas_acumuladas:
-        sobras_restantes = dict(caixas_soltas_acumuladas)
+        novo_pallet(TIPO_FINAL, caixas_soltas_acumuladas)
 
-        # Tenta aproveitar espaço livre no penúltimo pallet existente
-        if pallets:
-            penultimo = pallets[-1]
-            cx_atuais = sum(penultimo["itens"].values())
-            fileiras_atuais = fileiras_do_lote(penultimo["itens"])
+    # --- REBALANCEAMENTO INTELIGENTE: GARANTE NO MÍNIMO 2 FILEIRAS CHEIAS NO ÚLTIMO PALLET ---
+    pallets = [p for p in pallets if sum(p["itens"].values()) > 0]
 
-            limite_fileiras_pen = min([skus[k]["Altura"] for k in penultimo["itens"].keys()] + [ALTURA_MAXIMA_GERAL])
-            limite_cx_pen = min([skus[k]["Capacidade_Max"] for k in penultimo["itens"].keys()] + [100])
+    if len(pallets) >= 2:
+        ult = pallets[-1]
+        pen = pallets[-2]
 
-            espaco_fileiras = limite_fileiras_pen - fileiras_atuais
-            espaco_cx = limite_cx_pen - cx_atuais
+        cpf_ult = max(skus[k]["Caixas_Por_Fileira"] for k in ult["itens"])
+        cx_ult = sum(ult["itens"].values())
+        f_ult = cx_ult / cpf_ult
 
-            if espaco_fileiras > 0 and espaco_cx > 0:
-                for sku in list(sobras_restantes.keys()):
-                    qtd = sobras_restantes[sku]
-                    pode_pegar = min(qtd, espaco_cx)
-                    if pode_pegar > 0:
-                        penultimo["itens"][sku] = penultimo["itens"].get(sku, 0) + pode_pegar
-                        sobras_restantes[sku] -= pode_pegar
-                        espaco_cx -= pode_pegar
-                        if sobras_restantes[sku] == 0:
-                            del sobras_restantes[sku]
+        # Se o último pallet ficou com menos de 2 fileiras cheias equivalentes:
+        if f_ult < 2.0:
+            fileiras_pen = []
+            for k, v in list(pen["itens"].items()):
+                cpf = skus[k]["Caixas_Por_Fileira"]
+                f_cheias = v // cpf
+                if f_cheias > 0:
+                    fileiras_pen.append({"sku": k, "cpf": cpf, "f_cheias": f_cheias})
 
-        # Sobras finais direcionadas ao ÚLTIMO PALLET respeitando no máximo 5 fileiras e capacidade
-        if sobras_restantes:
-            curr_ult_itens = {}
-            curr_ult_cx = 0
+            # Desloca fileira(s) cheias do penúltimo para equilibrar e garantir >= 2 fileiras no último
+            for fp in fileiras_pen:
+                while fp["f_cheias"] > 0 and f_ult < 2.0:
+                    pega = fp["cpf"]
+                    pen["itens"][fp["sku"]] -= pega
+                    if pen["itens"][fp["sku"]] == 0:
+                        del pen["itens"][fp["sku"]]
+                    ult["itens"][fp["sku"]] = ult["itens"].get(fp["sku"], 0) + pega
+                    fp["f_cheias"] -= 1
+                    cx_ult += pega
+                    f_ult = cx_ult / cpf_ult
+                    if f_ult >= 2.0:
+                        break
 
-            for sku in list(sobras_restantes.keys()):
-                qtd = sobras_restantes[sku]
-                cpf = skus[sku]["Caixas_Por_Fileira"]
-                cap_max_sku = min(skus[sku]["Capacidade_Max"], cpf * ALTURA_MAXIMA_GERAL)
-
-                while qtd > 0:
-                    pode_colocar = min(qtd, cap_max_sku - curr_ult_cx)
-                    if pode_colocar <= 0:
-                        novo_pallet(TIPO_FINAL, curr_ult_itens)
-                        curr_ult_itens = {}
-                        curr_ult_cx = 0
-                        pode_colocar = min(qtd, cap_max_sku)
-
-                    curr_ult_itens[sku] = curr_ult_itens.get(sku, 0) + pode_colocar
-                    curr_ult_cx += pode_colocar
-                    qtd -= pode_colocar
-
-            if curr_ult_itens:
-                novo_pallet(TIPO_FINAL, curr_ult_itens)
+    # Filtrar pallets limpos após rebalanceamento
+    pallets = [p for p in pallets if sum(p["itens"].values()) > 0]
 
     linhas = []
     for idx, p in enumerate(pallets, 1):
