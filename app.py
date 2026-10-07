@@ -424,7 +424,14 @@ def _gerar_pallets(carrinho, df_produtos):
 
     linhas = []
     for idx, p in enumerate(pallets, 1):
-        itens_ord = sorted(p["itens"].items(), key=lambda kv: (-skus[kv[0]]["Ordem_Caixa"], kv[0]))
+        # Garante que fileiras fechadas fiquem no início e caixas soltas (sobras) no final
+        def chave_ordenacao(kv):
+            sku, qtd = kv
+            s = skus[sku]
+            eh_sobra_solta = 1 if (qtd % s["Caixas_Por_Fileira"] != 0) else 0
+            return (eh_sobra_solta, -s["Ordem_Caixa"], sku)
+
+        itens_ord = sorted(p["itens"].items(), key=chave_ordenacao)
         fileiras_pallet = fileiras_do_lote(p["itens"])
         for sku, qtd in itens_ord:
             s = skus[sku]
@@ -488,11 +495,10 @@ def gerar_pdf(df_pallets, cliente, data_str):
         pdf.cell(0, 7, f"Pallet {pn}", border="B")
         pdf.ln(8)
 
-        larg = [30, 80, 25, 25, 30]
-        pdf.set_font("Helvetica", "B", 8)
-        pdf.set_fill_color(235, 235, 235)
         headers = ["SKU", "Produto", "N. Cx", "Qtd Cx", "Cx / Fileira", "Altura"]
         larg = [30, 75, 20, 22, 25, 18]
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_fill_color(235, 235, 235)
         
         for w, t in zip(larg, headers):
             pdf.cell(w, 6, t, border=1, fill=True, align="C")
@@ -554,7 +560,6 @@ if st.session_state.processado and st.session_state.carrinho:
         total_cx_pallet = int(df_p["Quantidade de Caixas"].sum())
 
         with st.expander(f"📌 Pallet {pn}", expanded=True):
-            # Tabela sem a coluna de total de peças
             df_exibicao = df_p[[
                 "SKU",
                 "Produto",
