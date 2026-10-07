@@ -2,7 +2,6 @@ from datetime import datetime
 from fractions import Fraction
 import itertools
 import os
-import textwrap
 import re
 import pandas as pd
 import streamlit as st
@@ -82,14 +81,11 @@ def carregar_base(caminho_excel, versao=None):
     df = pd.read_excel(caminho_excel, sheet_name=0)  # sempre a PRIMEIRA aba
     df.columns = df.columns.str.strip()
 
-    # linhas sem dados de paletização são ignoradas em silêncio (sem aviso):
-    # antes viravam "1 caixa por pallet" e distorciam o cálculo
     df = df.dropna(subset=COLUNAS_ESSENCIAIS).copy()
 
     df["SKU"] = df["SKU"].astype(str).str.strip()
     df["NOME DO PRODUTO"] = df["NOME DO PRODUTO"].astype(str).str.strip()
 
-    # número da caixa vem como 1.0 no Excel -> "1"
     num_caixa = pd.to_numeric(df["NUMERO DA CAIXA"], errors="coerce")
     df["NUMERO DA CAIXA"] = [
         str(int(n)) if pd.notna(n) else str(orig).strip()
@@ -123,10 +119,6 @@ def carregar_base(caminho_excel, versao=None):
 
 @st.cache_data
 def diagnosticar_base(caminho_excel, versao=None):
-    """SKUs cuja capacidade não bate com caixas/fileira x altura, só do que está na
-    planilha AGORA. Linhas sem dados são ignoradas sem aviso. 'versao' (data de
-    gravação do arquivo) entra na chave do cache: ao salvar a planilha de novo, o
-    diagnóstico é refeito sozinho."""
     planilha = pd.ExcelFile(caminho_excel)
     aba = planilha.sheet_names[0]
     bruto = pd.read_excel(planilha, sheet_name=aba)
@@ -200,10 +192,6 @@ if _inconsistentes:
                 f"- **Erro na planilha - SKU {p['sku']}** ({p['produto']}): {detalhe}. "
                 f"O sistema está usando {p['usa_fil']} fileiras ({p['usa_cx']} cx) por pallet."
             )
-        st.caption(
-            "Corrija a linha na planilha e salve: o aviso atualiza sozinho na próxima "
-            "interação (se o app rodar na nuvem, é preciso publicar a planilha nova)."
-        )
 
 # --- 3. ESTADO DA SESSÃO ---
 if "carrinho" not in st.session_state:
@@ -347,19 +335,18 @@ st.markdown("---")
 
 
 # --- 6. ALGORITMO COMEX - PALLETS SEQUENCIAIS, TIPO DE CAIXA E ALTURA ---
-# Limite geral das fileiras; quem manda é a ALTURA de cada SKU na planilha (normal = 5;
-# a linha LANCERO é cadastrada com 6). O pallet respeita sempre o SKU mais baixo.
 ALTURA_MAXIMA_FILEIRAS = 6
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU unico, sequencial 🟢"
 TIPO_MESMA_ALTURA = "Pallet Fechado - mesma caixa e mesma altura 🟢"
 TIPO_ALTURAS_DIFERENTES = "Pallet Fechado - mesma caixa, alturas diferentes 🟡"
+TIPO_FILEIRAS_SOBRAS = "Pallet Fechado - fileiras completas de sobras 🟢"
 TIPO_FINAL = "Pallet Final (caixas soltas e sobras) 🟠"
 
 
 def _achar_combinacao_exata(unidades, alvo):
     """Procura combinação de blocos inteiros (SKU, fileiras) cuja soma de
-    fileiras seja exatamente 'alvo'. Prefere blocos maiores (menos SKUs no pallet)."""
+    fileiras seja exatamente 'alvo'."""
     unidades = sorted(unidades, key=lambda u: (-u[1], str(u[0])))
     memo = {}
 
@@ -388,7 +375,7 @@ def _achar_combinacao_exata(unidades, alvo):
 
 
 def _particoes(itens):
-    """Todas as formas de dividir uma lista pequena em grupos."""
+    """Todas as formas de dividir uma lista em grupos."""
     if not itens:
         yield []
         return
@@ -400,7 +387,6 @@ def _particoes(itens):
 
 
 def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
-    # --- Preparação dos SKUs do pedido ---
     skus = {}
     padrao_tipo = _cpf_padrao_por_tipo(df_produtos)
     for item in carrinho:
@@ -426,11 +412,10 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
             "Pecas_Por_Caixa": int(prod["QUANTIDADE DE PEÇAS"]),
             "Caixas_Por_Fileira": cx_fileira,
             "Altura": altura,
-            "Capacidade_Max": cx_fileira * altura,  # sempre fileiras completas
+            "Capacidade_Max": cx_fileira * altura,
             "Restante": int(item["Qtd_Caixas"]),
         }
 
-    # Cada pallet: {"tipo": str, "itens": {sku: caixas}}
     pallets = []
 
     def novo_pallet(tipo, itens):
@@ -440,31 +425,20 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
         return max(s["Caixas_Por_Fileira"] for s in skus.values() if s["Ordem_Caixa"] == ordem)
 
     def fileiras_do_lote(itens):
-        """Fileiras ocupadas: caixas do mesmo tipo dividem fileiras entre si."""
         por_tipo = {}
         for sku, qtd in itens.items():
             por_tipo[skus[sku]["Ordem_Caixa"]] = por_tipo.get(skus[sku]["Ordem_Caixa"], 0) + qtd
         return sum(-(-qtd // cx_fileira_do_tipo(t)) for t, qtd in por_tipo.items())
 
-    def so_fileiras_completas(itens):
-        por_tipo = {}
-        for sku, qtd in itens.items():
-            por_tipo[skus[sku]["Ordem_Caixa"]] = por_tipo.get(skus[sku]["Ordem_Caixa"], 0) + qtd
-        return all(qtd % cx_fileira_do_tipo(t) == 0 for t, qtd in por_tipo.items())
-
-    def limite_fileiras(itens):
-        return min([ALTURA_MAXIMA_FILEIRAS] + [skus[sku]["Altura"] for sku in itens])
-
     ordem_skus = sorted(skus.values(), key=lambda s: (-s["Ordem_Caixa"], s["SKU"]))
 
-    # ETAPA 1: pallets completos de um único SKU, SEQUENCIAIS (Pallet 01, 02, ...)
+    # ETAPA 1: Pallets completos de um único SKU
     for s in ordem_skus:
         while s["Restante"] >= s["Capacidade_Max"]:
             novo_pallet(TIPO_SEQUENCIAL, {s["SKU"]: s["Capacidade_Max"]})
             s["Restante"] -= s["Capacidade_Max"]
 
-    # ETAPA 2: pallets mistos, SEMPRE separados por tipo de caixa.
-    # Só entram fileiras completas; blocos de um SKU não são divididos.
+    # ETAPA 2: Pallets mistos (mesmo tipo de caixa, fileiras inteiras)
     tipos = sorted({s["Ordem_Caixa"] for s in skus.values()}, reverse=True)
     for tipo in tipos:
         skus_tipo = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo]
@@ -484,7 +458,6 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
                 skus[sku]["Restante"] -= qtd
             novo_pallet(tipo_pallet, itens)
 
-        # 2.1: MESMA ALTURA dentro do mesmo tipo de caixa
         for altura in sorted({s["Altura"] for s in skus_tipo}, reverse=True):
             while True:
                 escolha = _achar_combinacao_exata(
@@ -494,13 +467,11 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
                     break
                 fechar(escolha, TIPO_MESMA_ALTURA)
 
-        # 2.2: esgotada a mesma altura, mistura ALTURAS DIFERENTES (mesmo tipo de caixa)
         achou = True
         while achou:
             achou = False
             for alvo in sorted({s["Altura"] for s in skus_tipo}, reverse=True):
                 elegiveis = unidades(lambda s, a=alvo: s["Altura"] >= a)
-                # precisa de ao menos um SKU com a altura-limite do pallet
                 for sku_base, fil_base in [u for u in elegiveis if skus[u[0]]["Altura"] == alvo]:
                     outros = [u for u in elegiveis if u[0] != sku_base]
                     resto = _achar_combinacao_exata(outros, alvo - fil_base) if fil_base < alvo else []
@@ -511,14 +482,8 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
                 if achou:
                     break
 
-    # ETAPA 3: sobras. Regra: fechar a fileira do tipo de caixa antes de entrar
-    # outro tipo. Só as caixas que NÃO completam fileira vão para o último pallet.
+    # ETAPA 3: Otimização Inteligente das Sobras (Juntar SKUs de mesma altura/caixa)
     def montar_fileiras(tipo):
-        """Transforma as sobras de um tipo de caixa em fileiras completas + caixas soltas.
-        1) fileiras PURAS (um SKU só) - mantêm a altura do próprio SKU e são as mais
-           rápidas de montar;
-        2) só os restos (< 1 fileira) de cada SKU são combinados entre si, primeiro
-           dentro da mesma altura e depois misturando alturas (mesmo tipo de caixa)."""
         cpf = cx_fileira_do_tipo(tipo)
         sobras = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0]
         fileiras, restos = [], []
@@ -530,6 +495,7 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
                 restos.append((s["SKU"], s["Restante"] % cpf))
             s["Restante"] = 0
 
+        # Tenta combinar restos do mesmo tipo de caixa e mesma altura para formar fileira
         def consumir(fila):
             atual, cheia = {}, 0
             for sku, qtd in fila:
@@ -551,12 +517,12 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
                 key=lambda r: (-r[1], r[0]),
             )
             sobra_de_altura.extend(consumir(grupo).items())
-        # mistura alturas só com o que sobrou. 'desc': as caixas soltas ficam com as
-        # alturas MENORES; 'asc': ficam com as MAIORES (limitam menos o pallet final)
+
         if ordem_residuos == "asc":
             sobra_de_altura.sort(key=lambda kv: (skus[kv[0]]["Altura"], -kv[1], kv[0]))
         else:
             sobra_de_altura.sort(key=lambda kv: (-skus[kv[0]]["Altura"], -kv[1], kv[0]))
+            
         soltas = consumir(sobra_de_altura)
         return fileiras, soltas
 
@@ -572,7 +538,6 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
                 "solta": True,
             })
 
-    # tipos com mais fileiras primeiro (empate: menor número de caixa)
     fileiras_todas.sort(key=lambda tf: (-len(tf[1]), tf[0]))
 
     def juntar(lista_fileiras):
@@ -583,15 +548,11 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
         return itens
 
     def ocupacao(itens):
-        """Fração da capacidade do pallet ocupada (1 = lotado). Cada SKU consome
-        qtd / Capacidade_Max; para um SKU único é exatamente o limite de caixas."""
         return sum(
             Fraction(qtd, skus[sku]["Capacidade_Max"]) for sku, qtd in itens.items()
         )
 
     def cabe(lista_fileiras, nova):
-        """A fileira 'nova' cabe no pallet? Respeita (1) altura máxima de 5 e a
-        altura do SKU mais baixo e (2) a quantidade máxima de caixas do pallet."""
         if not lista_fileiras:
             return True
         alt = min([ALTURA_MAXIMA_FILEIRAS] + [f["altura"] for f in lista_fileiras + [nova]])
@@ -602,21 +563,9 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
     def limite_fileiras_lista(lista_fileiras):
         return min([ALTURA_MAXIMA_FILEIRAS] + [f["altura"] for f in lista_fileiras])
 
-    TIPO_FILEIRAS_SOBRAS = "Pallet Fechado - fileiras completas de sobras 🟢"
-
-    # ETAPA 4: empacotamento das fileiras de sobras em pallets.
-    # Cada fileira tem uma altura (a do SKU mais baixo nela) e cada pallet comporta,
-    # no máximo, tantas fileiras quanto a menor altura que ele contém. Processando
-    # da MENOR altura para a MAIOR, os pallets baixos são completados com fileiras
-    # mais altas (que cabem em qualquer pallet baixo) e nunca sobra pallet pela
-    # metade sem necessidade - ou seja, o menor número possível de pallets.
-    #  - as caixas soltas (fileiras quebradas) ficam TODAS juntas no último pallet,
-    #    só se dividindo em mais de um quando altura/capacidade não permitirem;
-    #  - dentro da mesma altura, prefere-se o mesmo tipo de caixa no mesmo pallet.
     rows_completas = [f for _, fl in fileiras_todas for f in fl]
 
     def particoes_viaveis(soltas):
-        """Formas de dividir as caixas soltas em pallets (cada grupo precisa caber)."""
         viaveis = [
             part for part in _particoes(soltas)
             if all(
@@ -641,12 +590,9 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
                 cands = [
                     p for p in pals
                     if p["lim"] <= h and len(p["rows"]) < p["lim"]
-                    # (a capacidade em caixas fica garantida pelo limite de fileiras:
-                    #  cada SKU comporta exatamente 'caixas/fileira x altura')
                 ]
                 if cands:
                     p = min(cands, key=lambda p: (
-                        # o pallet que será o ÚLTIMO recebe primeiro até ter 2 fileiras completas
                         0 if (desig is not None and p is pals[desig]
                               and n_completas(p["rows"]) < 2) else 1,
                         0 if f["tipo"] in {x["tipo"] for x in p["rows"]} else 1,
@@ -681,22 +627,14 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
         p for p in pals_sobras
         if p["solta"] or len(p["rows"]) < limite_fileiras_lista(p["rows"])
     ]
-    # o pallet com caixas soltas é sempre o ÚLTIMO (o que tiver mais fileiras completas);
-    # os demais, do mais cheio ao mais vazio
+
     restantes.sort(key=lambda p: (
         p["solta"],
         n_completas(p["rows"]) if p["solta"] else -len(p["rows"]),
     ))
     blocos = [p["rows"] for p in restantes]
 
-    # Reajuste do ÚLTIMO pallet: ele deve ter, no mínimo, 2 fileiras COMPLETAS.
-    # Se faltar, extrai fileiras completas dos pallets mais recentes (de trás
-    # para frente): pallets finais -> pallets de sobras -> pallets mistos ->
-    # pallets sequenciais. Regras:
-    #   - só sai fileira COMPLETA (o doador nunca fica com fileira quebrada);
-    #   - o doador nunca fica com menos de 2 fileiras completas;
-    #   - o pallet que recebe respeita SEMPRE a altura máxima (5 fileiras / altura
-    #     do SKU mais baixo) e a quantidade máxima de caixas (função cabe()).
+    # Reajuste: Garante pelo menos 2 fileiras COMPLETAS no último pallet
     TIPO_REAJUSTADO = "Pallet Fechado - fileiras completas (reajustado) 🟢"
     TIPO_SEQ_OU_MISTO = {TIPO_SEQUENCIAL: 2, TIPO_MESMA_ALTURA: 1, TIPO_ALTURAS_DIFERENTES: 1}
 
@@ -711,8 +649,6 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
             alt_bloco = min([ALTURA_MAXIMA_FILEIRAS] + [f["altura"] for f in bloco])
             candidatos = []
 
-            # a) doadores em lista de fileiras: pallets de sobras e demais pallets
-            #    finais (posição na numeração final = n_pal + índice)
             listas = [(n_pal + i, d) for i, d in enumerate(fechados_sobras)]
             listas += [(n_pal + n_fech + i, d) for i, d in enumerate(blocos) if d is not bloco]
             for pos, doador in listas:
@@ -722,13 +658,12 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
                     if f.get("solta") or not cabe(bloco, f):
                         continue
                     prioridade = (
-                        -pos,                                    # mais recente primeiro
-                        0 if f["tipo"] in tipos_bloco else 1,    # mesmo tipo de caixa
-                        0 if f["altura"] == alt_bloco else 1,    # mesma altura
+                        -pos,
+                        0 if f["tipo"] in tipos_bloco else 1,
+                        0 if f["altura"] == alt_bloco else 1,
                     )
                     candidatos.append((prioridade, "lista", doador, f))
 
-            # b) doadores já formados nas etapas 1 e 2 (pallets mistos/sequenciais)
             for idx_p, pal in enumerate(pallets):
                 if pal["tipo"] not in TIPO_SEQ_OU_MISTO and pal["tipo"] != TIPO_REAJUSTADO:
                     continue
@@ -750,7 +685,7 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
                     candidatos.append((prioridade, "pallet", (pal, sku), f))
 
             if not candidatos:
-                break  # nenhum pallet consegue doar uma fileira completa que caiba
+                break
             _, origem, doador, f = min(candidatos, key=lambda c: c[0])
             if origem == "lista":
                 doador.remove(f)
@@ -767,7 +702,6 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
     for bloco in blocos:
         novo_pallet(TIPO_FINAL, juntar(bloco))
 
-    # --- Estrutura final para exibição e relatórios ---
     linhas = []
     for idx, p in enumerate(pallets, 1):
         itens_ord = sorted(
@@ -796,8 +730,6 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
 
 
 def _pontuar(df):
-    """Menor é melhor: (último pallet sem 2 fileiras completas, nº de pallets,
-    pallets com caixa solta, linhas de separação)."""
     cpf_tipo = df.groupby("Ordem_Caixa")["Caixas_Por_Fileira"].max().to_dict()
     ultimo = df["Pallet_Num"].max()
     com_solta = 0
@@ -817,7 +749,6 @@ def _pontuar(df):
 
 
 def processar_pallets_operador(carrinho, df_produtos):
-    """Roda as variantes do algoritmo e devolve a melhor montagem."""
     melhor = None
     for variante in ("desc", "asc"):
         df = _gerar_pallets(carrinho, df_produtos, variante)
@@ -827,7 +758,7 @@ def processar_pallets_operador(carrinho, df_produtos):
     return melhor[1]
 
 
-# --- 6.1 FUNÇÕES DE APOIO: CONFERÊNCIA, MONTAGEM FILEIRA A FILEIRA E SEPARAÇÃO ---
+# --- 6.1 FUNÇÕES DE APOIO ---
 def _tipo_limpo(tipo):
     for emoji in ("🟢", "🟡", "🟠"):
         tipo = tipo.replace(emoji, "")
@@ -835,7 +766,6 @@ def _tipo_limpo(tipo):
 
 
 def _faixas(numeros):
-    """[1, 2, 3, 5] -> '1 a 3, 5'."""
     numeros = sorted(numeros)
     partes, ini, ant = [], None, None
     for n in numeros:
@@ -852,10 +782,6 @@ def _faixas(numeros):
 
 
 def montar_camadas(df_p):
-    """Quebra um pallet em fileiras, da BASE para o TOPO.
-    Fileiras completas primeiro (tipo de caixa de maior número na base; dentro do
-    tipo, fileiras puras de um SKU antes das mistas); fileiras incompletas por
-    último, no topo, onde não deixam 'buraco' por baixo."""
     completas_, parciais = [], []
     for tipo in sorted(df_p["Ordem_Caixa"].unique(), reverse=True):
         d = df_p[df_p["Ordem_Caixa"] == tipo]
@@ -890,30 +816,7 @@ def montar_camadas(df_p):
     return camadas
 
 
-def posicao_por_sku(camadas):
-    """Onde cada SKU fica no pallet: '1 a 3' (fileiras inteiras) e, se for o caso,
-    '4 (12 cx, mista)' ou '5 (3 cx, incompleta)'."""
-    pos = {}
-    for c in camadas:
-        for sku, _, q in c["itens"]:
-            d = pos.setdefault(sku, {"inteiras": [], "outras": []})
-            if c["completa"] and len(c["itens"]) == 1:
-                d["inteiras"].append(c["n"])
-            else:
-                motivo = "mista" if c["completa"] else "incompleta"
-                d["outras"].append(f"{c['n']} ({q} cx, {motivo})")
-    textos = {}
-    for sku, d in pos.items():
-        partes = []
-        if d["inteiras"]:
-            partes.append(_faixas(d["inteiras"]))
-        partes.extend(d["outras"])
-        textos[sku] = "; ".join(partes)
-    return textos
-
-
 def tabela_camadas(camadas):
-    """Tabela de montagem: fileiras idênticas e seguidas viram uma linha só."""
     linhas, i = [], 0
     while i < len(camadas):
         c = camadas[i]
@@ -944,8 +847,6 @@ def tabela_camadas(camadas):
 
 
 def lista_separacao(df):
-    """Lista consolidada para quem separa: cada SKU uma vez, com o total a
-    separar e para quais pallets as caixas vão."""
     linhas = []
     for sku, g in df.groupby("SKU", sort=False):
         g = g.sort_values("Pallet_Num")
@@ -974,8 +875,6 @@ def lista_separacao(df):
 
 
 def agrupar_pallets_identicos(df, agrupar=True):
-    """Pallets seguidos e idênticos (mesmos SKUs e quantidades) viram um grupo só:
-    'Pallets 01 a 03'. O operador monta o primeiro e repete."""
     grupos = []
     for pn in sorted(df["Pallet_Num"].unique()):
         g = df[df["Pallet_Num"] == pn]
@@ -995,8 +894,6 @@ def agrupar_pallets_identicos(df, agrupar=True):
 
 
 def validar_pallets(df, carrinho):
-    """Conferência automática do resultado. 'erros' = regra física/quantidade
-    violada; 'avisos' = regra de preferência que não foi possível cumprir."""
     erros, avisos = [], []
     pedido = {str(c["SKU"]).strip(): int(c["Qtd_Caixas"]) for c in carrinho}
     gerado = df.groupby("SKU")["Qtd Caixas"].sum().astype(int).to_dict()
@@ -1019,20 +916,18 @@ def validar_pallets(df, carrinho):
         soltas = any(int(r["q"]) % int(r["c"]) for _, r in por_tipo.iterrows())
         if soltas and pn != ultimo:
             avisos.append(
-                f"Pallet {pn:02d} tem fileira incompleta (caixas soltas): não foi possível "
-                "juntar todas as soltas no último pallet respeitando altura e capacidade."
+                f"Pallet {pn:02d} tem fileira incompleta (caixas soltas)."
             )
         if pn == ultimo:
             n_completas = sum(int(r["q"]) // int(r["c"]) for _, r in por_tipo.iterrows())
             if n_completas < 2:
                 avisos.append(
-                    f"O último pallet (Pallet {pn:02d}) ficou com {n_completas} fileira(s) "
-                    "completa(s): não foi possível chegar a 2 respeitando altura e capacidade."
+                    f"O último pallet (Pallet {pn:02d}) ficou com {n_completas} fileira(s) completa(s)."
                 )
     return erros, avisos
 
 
-# --- 7. GERADOR DE PDF (COMPACTO: lista de separação + pallets idênticos agrupados) ---
+# --- 7. GERADOR DE PDF ---
 def _latin(txt):
     return str(txt).encode("latin-1", "replace").decode("latin-1")
 
@@ -1043,23 +938,22 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
     pdf.add_page()
 
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "MUSTAD - Relatório de Paletização", align="C")
+    pdf.cell(0, 10, "MUSTAD - Relatorio de Paletizacao", align="C")
     pdf.ln(7)
 
-    nome_cliente_formatado = cliente.strip() if cliente else "Não Informado"
+    nome_cliente_formatado = cliente.strip() if cliente else "Nao Informado"
     pdf.set_font("Helvetica", "B", 11)
     pdf.cell(0, 6, f"Cliente: {_latin(nome_cliente_formatado)}", align="C")
     pdf.ln(5)
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 5, f"Data de Emissão: {data_str}", align="C")
+    pdf.cell(0, 5, f"Data de Emissao: {data_str}", align="C")
     pdf.ln(5)
     n_pallets = int(df_pallets["Pallet_Num"].nunique())
     total_cx = int(df_pallets["Qtd Caixas"].sum())
     total_pc = int(df_pallets["Total Peças"].sum())
-    pdf.cell(0, 5, f"{n_pallets} pallets | {total_pc} peças", align="C")
+    pdf.cell(0, 5, f"{n_pallets} pallets | {total_pc} pecas", align="C")
     pdf.ln(8)
 
-    # Caixa de destaque: TOTAL DE CAIXAS
     pdf.set_fill_color(30, 30, 30)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", "B", 22)
@@ -1067,7 +961,6 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
     pdf.set_text_color(0, 0, 0)
     pdf.ln(18)
 
-    # ---- Pallets (idênticos agrupados) ----
     pdf.set_font("Helvetica", "B", 11)
     pdf.cell(0, 7, "Montagem dos Pallets", border="B")
     pdf.ln(10)
@@ -1076,14 +969,13 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
         df_p = gr["df"]
         tipo_limpo = _latin(_tipo_limpo(str(df_p["Tipo"].iloc[0])))
         cx_pallet = int(df_p["Qtd Caixas"].sum())
-        pc_pallet = int(df_p["Total Peças"].sum())
         altura_bloco = 20 + (len(df_p) + 1) * 6
         if pdf.get_y() + altura_bloco > 275:
             pdf.add_page()
 
         titulo = f"{gr['rotulo']} | Tipo: {tipo_limpo}"
         if gr["n"] > 1:
-            titulo += f" | {gr['n']} pallets idênticos"
+            titulo += f" | {gr['n']} pallets identicos"
         pdf.set_font("Helvetica", "B", 10)
         pdf.cell(0, 7, titulo, border="B")
         pdf.ln(8)
@@ -1097,7 +989,7 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
         larg = [24, 62, 18, 22, 24, 20, 20]
         pdf.set_font("Helvetica", "B", 8)
         pdf.set_fill_color(235, 235, 235)
-        for w, t in zip(larg, ["SKU", "Produto", "N. Caixa", "Qtd Cx", "Qtd Peças", "Cx/Fil.", "Fil."]):
+        for w, t in zip(larg, ["SKU", "Produto", "N. Caixa", "Qtd Cx", "Qtd Pecas", "Cx/Fil.", "Fil."]):
             pdf.cell(w, 6, t, border=1, fill=True)
         pdf.ln()
 
@@ -1122,7 +1014,6 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
 # --- 8. EXECUÇÃO E RESULTADOS ---
 @st.cache_data(show_spinner="Calculando a melhor montagem dos pallets...")
 def calcular_pallets(itens, caminho_excel, versao, _df_produtos):
-    """Cálculo em cache: mexer em checkbox/abas não recalcula tudo de novo."""
     carrinho = [{"SKU": sku, "Qtd_Caixas": qtd} for sku, qtd in itens]
     return processar_pallets_operador(carrinho, _df_produtos)
 
@@ -1152,16 +1043,14 @@ if st.session_state.processado and st.session_state.carrinho:
     n_pallets = int(df_pallets["Pallet_Num"].nunique())
     st.success(f"**Total de Pallets Gerados:** {n_pallets}")
 
-    # Conferência automática antes de liberar para o operador
     erros, avisos = validar_pallets(df_pallets, st.session_state.carrinho)
     if erros:
-        st.error("⛔ Conferência automática encontrou divergências - não use este resultado:")
+        st.error("⛔ Conferência automática encontrou divergências:")
         for e in erros:
             st.write(f"- {e}")
     else:
         st.info(
-            "✅ Conferência automática: todas as caixas do pedido foram distribuídas, "
-            "sem excesso de altura ou de capacidade em nenhum pallet."
+            "✅ Conferência automática: todas as caixas do pedido foram distribuídas sem inconsistências."
         )
     for a in avisos:
         st.warning(a)
@@ -1199,15 +1088,12 @@ if st.session_state.processado and st.session_state.carrinho:
 
     st.markdown("---")
 
-    # --- Lista de separação: para quem separa o pedido ---
     with st.expander("🧾 Lista de separação (cada SKU uma vez, com destino)", expanded=True):
         st.caption(
-            "Separe o total de cada SKU de uma vez e distribua conforme a coluna "
-            "'Vai para'."
+            "Separe o total de cada SKU de uma vez e distribua conforme a coluna 'Vai para'."
         )
         st.dataframe(lista_separacao(df_pallets), use_container_width=True)
 
-    # --- Pallets: para quem monta ---
     for gr in grupos:
         df_p = gr["df"]
         tipo_pallet = df_p["Tipo"].iloc[0]
@@ -1243,8 +1129,7 @@ if st.session_state.processado and st.session_state.carrinho:
 
             with aba_mont:
                 st.caption(
-                    "Fileiras numeradas da base (1) para o topo. A fileira incompleta, "
-                    "quando existir, fica por último, no topo."
+                    "Fileiras numeradas da base (1) para o topo. A fileira incompleta, quando existir, fica por último, no topo."
                 )
                 st.dataframe(tabela_camadas(camadas), use_container_width=True)
 
