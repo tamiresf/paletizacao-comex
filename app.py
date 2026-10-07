@@ -193,6 +193,7 @@ st.subheader("🛒 Itens do Pedido Atual")
 
 if st.session_state.carrinho:
     total_caixas_pedido = sum(item["Qtd_Caixas"] for item in st.session_state.carrinho)
+    total_pecas_pedido = sum(item["Qtd_Caixas"] * item["Pecas_Por_Caixa"] for item in st.session_state.carrinho)
 
     for index in range(len(st.session_state.carrinho) - 1, -1, -1):
         item = st.session_state.carrinho[index]
@@ -209,10 +210,11 @@ if st.session_state.carrinho:
             st.rerun()
 
     st.markdown("---")
-    m1, m2 = st.columns([3, 3])
+    m1, m2, m3 = st.columns([2.5, 2.5, 2])
     m1.metric("📦 Total de Caixas no Pedido", f"{total_caixas_pedido:,} cx".replace(",", "."))
+    m2.metric("🧩 Total de Peças no Pedido", f"{total_pecas_pedido:,} pçs".replace(",", "."))
 
-    with m2:
+    with m3:
         if st.button("🔴 Limpar Pedido", use_container_width=True):
             st.session_state.carrinho = []
             st.session_state.processado = False
@@ -431,7 +433,6 @@ def _gerar_pallets(carrinho, df_produtos):
             sku, qtd = kv
             s = skus[sku]
             eh_sobra_fracionada = 1 if (qtd % s["Caixas_Por_Fileira"] != 0) else 0
-            # Retorna tupla: (0 para fileira cheia / 1 para sobra, -Ordem_Caixa para caixa maior na base, sku)
             return (eh_sobra_fracionada, -s["Ordem_Caixa"], sku)
 
         itens_ord = sorted(p["itens"].items(), key=chave_empilhamento)
