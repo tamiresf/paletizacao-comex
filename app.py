@@ -223,7 +223,7 @@ else:
 
 st.markdown("---")
 
-# --- 6. REGRA DE PALETIZAÇÃO COMEX (CONTROLE RÍGIDO DE CAPACIDADE MÁXIMA) ---
+# --- 6. REGRA DE PALETIZAÇÃO COMEX (FILEIRAS CHEIAS NOS INTERMEDIÁRIOS E SOBRAS NO ÚLTIMO) ---
 ALTURA_MAXIMA_FILEIRAS = 6
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU único, sequencial"
@@ -302,7 +302,7 @@ def _gerar_pallets(carrinho, df_produtos):
             por_tipo[skus[sku]["Ordem_Caixa"]] = por_tipo.get(skus[sku]["Ordem_Caixa"], 0) + qtd
         return sum(-(-qtd // cx_fileira_do_tipo(t)) for t, qtd in por_tipo.items())
 
-    ordem_skus = sorted(skus.values(), key=lambda s: (-s["Ordem_Caixa"], s["SKU"]))
+    ordem_skus = sorted(skus.values(), key=lambda s: (s["Ordem_Caixa"], s["SKU"]))
 
     # 1. PALLETS SEQUENCIAIS FECHADOS
     for s in ordem_skus:
@@ -310,8 +310,8 @@ def _gerar_pallets(carrinho, df_produtos):
             novo_pallet(TIPO_SEQUENCIAL, {s["SKU"]: s["Capacidade_Max"]})
             s["Restante"] -= s["Capacidade_Max"]
 
-    # 2. COMBINAÇÃO DE MESMO TIPO DE CAIXA/ALTURA
-    tipos = sorted({s["Ordem_Caixa"] for s in skus.values()}, reverse=True)
+    # 2. COMBINAÇÃO DE MESMO TIPO DE CAIXA/ALTURA (FILEIRAS COMPLETAS)
+    tipos = sorted({s["Ordem_Caixa"] for s in skus.values()})
     for tipo in tipos:
         skus_tipo = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo]
 
@@ -339,55 +339,29 @@ def _gerar_pallets(carrinho, df_produtos):
                     break
                 fechar(escolha, TIPO_MESMA_ALTURA)
 
-    # 3. AGULHAMENTO DAS SOBRAS E CAIXAS SOLTAS COM LIMITAÇÃO RÍGIDA
-    def montar_fileiras(tipo):
+    # 3. MONTAGEM DE FILEIRAS COMPLETAS RESTANTES E RETENÇÃO RIGOROSA DAS CAIXAS SOLTAS (SOBRAS)
+    fileiras_completas_sobras = []
+    caixas_soltas_acumuladas = {}
+
+    for tipo in tipos:
         cpf = cx_fileira_do_tipo(tipo)
         sobras = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0]
-        fileiras, restos = [], []
 
         for s in sobras:
-            for _ in range(s["Restante"] // cpf):
-                fileiras.append({"tipo": tipo, "altura": s["Altura"], "itens": {s["SKU"]: cpf}})
-            if s["Restante"] % cpf:
-                restos.append((s["SKU"], s["Restante"] % cpf))
+            n_fileiras_cheias = s["Restante"] // cpf
+            resto_solto = s["Restante"] % cpf
+
+            for _ in range(n_fileiras_cheias):
+                fileiras_completas_sobras.append({
+                    "tipo": tipo,
+                    "altura": s["Altura"],
+                    "itens": {s["SKU"]: cpf}
+                })
+
+            if resto_solto > 0:
+                caixas_soltas_acumuladas[s["SKU"]] = caixas_soltas_acumuladas.get(s["SKU"], 0) + resto_solto
+
             s["Restante"] = 0
-
-        def consumir(fila):
-            atual, cheia = {}, 0
-            for sku, qtd in fila:
-                while qtd > 0:
-                    pega = min(cpf - cheia, qtd)
-                    atual[sku] = atual.get(sku, 0) + pega
-                    cheia += pega
-                    qtd -= pega
-                    if cheia == cpf:
-                        alt = min(skus[k]["Altura"] for k in atual)
-                        fileiras.append({"tipo": tipo, "altura": alt, "itens": atual})
-                        atual, cheia = {}, 0
-            return atual
-
-        sobra_de_altura = []
-        for altura in sorted({skus[k]["Altura"] for k, _ in restos}, reverse=True):
-            grupo = sorted(
-                [r for r in restos if skus[r[0]]["Altura"] == altura],
-                key=lambda r: (-r[1], r[0]),
-            )
-            sobra_de_altura.extend(consumir(grupo).items())
-
-        soltas = consumir(sobra_de_altura)
-        return fileiras, soltas
-
-    fileiras_todas, soltas_por_tipo = [], []
-    for tipo in tipos:
-        f, soltas = montar_fileiras(tipo)
-        fileiras_todas.append((tipo, f))
-        if soltas:
-            soltas_por_tipo.append({
-                "tipo": tipo,
-                "altura": min(skus[k]["Altura"] for k in soltas),
-                "itens": soltas,
-                "solta": True,
-            })
 
     def juntar(lista_fileiras):
         itens = {}
@@ -396,52 +370,39 @@ def _gerar_pallets(carrinho, df_produtos):
                 itens[sku] = itens.get(sku, 0) + qtd
         return itens
 
-    # Processamento controlado de sobras respeitando capacidade e altura máxima por pallet
-    todas_sobras_rows = [f for _, fl in fileiras_todas for f in fl]
-    if soltas_por_tipo:
-        for s in soltas_por_tipo:
-            todas_sobras_rows.append({
-                "tipo": s["tipo"],
-                "altura": s["altura"],
-                "itens": s["itens"],
-                "solta": True,
-            })
-
-    # Agrupamento com verificação rígida de transbordo
+    # Empacotamento das FILEIRAS FÍSICAS 100% CHEIAS em Pallets Fechados
     pals_sobras = []
     curr_pallet_rows = []
     curr_fileiras_count = 0.0
 
-    for f in todas_sobras_rows:
-        # Calcula a fração equivalente de fileiras da entrada
-        fracao_fileira = sum(qtd / skus[sku]["Caixas_Por_Fileira"] for sku, qtd in f["itens"].items())
-        
-        # Limite máximo de fileiras (capacidade máxima do pallet)
+    for f in fileiras_completas_sobras:
         limite_pallet = min([skus[sku]["Altura"] for sku in f["itens"].keys()] or [4])
 
-        # Se ultrapassar a capacidade limite do pallet, cria um novo pallet
-        if (curr_fileiras_count + fracao_fileira > limite_pallet or len(curr_pallet_rows) >= 4) and curr_pallet_rows:
+        if (curr_fileiras_count + 1.0 > limite_pallet or len(curr_pallet_rows) >= 4) and curr_pallet_rows:
             pals_sobras.append(curr_pallet_rows)
             curr_pallet_rows = []
             curr_fileiras_count = 0.0
 
         curr_pallet_rows.append(f)
-        curr_fileiras_count += fracao_fileira
+        curr_fileiras_count += 1.0
 
     if curr_pallet_rows:
         pals_sobras.append(curr_pallet_rows)
 
+    # Adiciona os pallets de fileiras completas
     for p_rows in pals_sobras:
-        tem_solta = any(r.get("solta") for r in p_rows)
-        novo_pallet(TIPO_FINAL if tem_solta else TIPO_FILEIRAS_SOBRAS, juntar(p_rows))
+        novo_pallet(TIPO_FILEIRAS_SOBRAS, juntar(p_rows))
+
+    # 4. PALLET FINAL (APENAS O ÚLTIMO PALLET RECEBE AS SOBRAS/CAIXAS FRACIONADAS)
+    if caixas_soltas_acumuladas:
+        novo_pallet(TIPO_FINAL, caixas_soltas_acumuladas)
 
     linhas = []
     for idx, p in enumerate(pallets, 1):
         def chave_empilhamento(kv):
             sku, qtd = kv
             s = skus[sku]
-            eh_sobra_fracionada = 1 if (qtd % s["Caixas_Por_Fileira"] != 0) else 0
-            return (eh_sobra_fracionada, -s["Ordem_Caixa"], sku)
+            return (s["Ordem_Caixa"], sku)
 
         itens_ord = sorted(p["itens"].items(), key=chave_empilhamento)
         fileiras_pallet = fileiras_do_lote(p["itens"])
@@ -549,7 +510,6 @@ if st.session_state.processado and st.session_state.carrinho:
     st.subheader("📦 Resultado da Paletização")
     st.success(f"**Total de Pallets Gerados:** {n_pallets} Pallets")
 
-    # Botão de Download do PDF
     if FPDF_DISPONIVEL:
         data_atual = datetime.now()
         pdf_bytes = gerar_pdf(
@@ -566,7 +526,6 @@ if st.session_state.processado and st.session_state.carrinho:
 
     st.markdown("---")
 
-    # Exibição individual pallet a pallet
     for pn in sorted(df_pallets["Pallet_Num"].unique()):
         df_p = df_pallets[df_pallets["Pallet_Num"] == pn]
         total_cx_pallet = int(df_p["Quantidade de Caixas"].sum())
@@ -583,7 +542,6 @@ if st.session_state.processado and st.session_state.carrinho:
 
             st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
 
-            # Resumo final do pallet
             st.markdown(
                 f"""
                 <div style="text-align: right;">
