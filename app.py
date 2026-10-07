@@ -454,10 +454,10 @@ def _gerar_pallets(carrinho, df_produtos):
     # Filtrar pallets limpos
     pallets = [p for p in pallets if sum(p["itens"].values()) > 0]
 
-    # Ordenar os pallets de modo que o pallet com a MENOR quantidade total de caixas seja O ÚLTIMO
+    # Ordenar os pallets de modo que o pallet com a MENOR quantidade total de caixas seja O ÚLTIMO de forma segura
     if len(pallets) > 1:
-        # Mantém os pallets cheios no início e coloca o de menor quantidade por último
-        pallets.sort(key=lambda p: (sum(p["itens"].values()) == min(sum(x["itens"].values()) for x in pallets), -sum(p["itens"].values())))
+        min_qtd = min(sum(p["itens"].values()) for p in pallets)
+        pallets.sort(key=lambda p: (sum(p["itens"].values()) == min_qtd, -sum(p["itens"].values())))
 
     linhas = []
     for idx, p in enumerate(pallets, 1):
