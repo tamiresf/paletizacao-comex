@@ -223,8 +223,8 @@ else:
 
 st.markdown("---")
 
-# --- 6. REGRA DE PALETIZAÇÃO SEQUENCIAL POR FAMÍLIA (ROTA OTIMIZADA DE PICKING) ---
-ALTURA_MAXIMA_FILEIRAS = 6
+# --- 6. REGRA DE PALETIZAÇÃO COMEX (TRAVA DE 5 FILEIRAS E ALOCAÇÃO PENÚLTIMO/ÚLTIMO PALLET) ---
+ALTURA_MAXIMA_GERAL = 5
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU único, sequencial"
 TIPO_MESMA_ALTURA = "Pallet Fechado - mesma caixa e mesma altura"
@@ -261,6 +261,7 @@ def _achar_combinacao_exata(unidades, alvo):
 def _gerar_pallets(carrinho, df_produtos):
     skus = {}
     padrao_tipo = _cpf_padrao_por_tipo(df_produtos)
+
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
@@ -274,7 +275,7 @@ def _gerar_pallets(carrinho, df_produtos):
             _fileiras_efetivas(
                 cx_fileira, prod["ALTURA"], prod["QUANTIDADE DE CAIXAS NO PALLET"]
             ),
-            ALTURA_MAXIMA_FILEIRAS,
+            ALTURA_MAXIMA_GERAL,
         )
         skus[sku] = {
             "SKU": sku,
@@ -284,7 +285,7 @@ def _gerar_pallets(carrinho, df_produtos):
             "Pecas_Por_Caixa": int(prod["QUANTIDADE DE PEÇAS"]),
             "Caixas_Por_Fileira": cx_fileira,
             "Altura": altura,
-            "Capacidade_Max": cx_fileira * altura,
+            "Capacidade_Max": min(cx_fileira * altura, int(prod["QUANTIDADE DE CAIXAS NO PALLET"])),
             "Restante": int(item["Qtd_Caixas"]),
         }
 
@@ -302,7 +303,6 @@ def _gerar_pallets(carrinho, df_produtos):
             por_tipo[skus[sku]["Ordem_Caixa"]] = por_tipo.get(skus[sku]["Ordem_Caixa"], 0) + qtd
         return sum(-(-qtd // cx_fileira_do_tipo(t)) for t, qtd in por_tipo.items())
 
-    # Ordenação dos SKUs por Família/Ordem de Caixa para montagem sequencial direta
     ordem_skus = sorted(skus.values(), key=lambda s: (s["Ordem_Caixa"], s["SKU"]))
 
     # 1. PALLETS SEQUENCIAIS FECHADOS
@@ -311,7 +311,7 @@ def _gerar_pallets(carrinho, df_produtos):
             novo_pallet(TIPO_SEQUENCIAL, {s["SKU"]: s["Capacidade_Max"]})
             s["Restante"] -= s["Capacidade_Max"]
 
-    # 2. COMBINAÇÃO DE MESMO TIPO DE CAIXA/ALTURA (FILEIRAS CHEIAS POR FAMÍLIA)
+    # 2. COMBINAÇÃO DE MESMO TIPO DE CAIXA/ALTURA
     tipos = sorted({s["Ordem_Caixa"] for s in skus.values()})
     for tipo in tipos:
         skus_tipo = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo]
@@ -340,7 +340,7 @@ def _gerar_pallets(carrinho, df_produtos):
                     break
                 fechar(escolha, TIPO_MESMA_ALTURA)
 
-    # 3. FILEIRAS CHEIAS DE SOBRAS E ACÚMULO DE CAIXAS SOLTAS PARA O PALLET FINAL
+    # 3. FORMANDO FILEIRAS FECHADAS NO PENÚLTIMO PALLET A PARTIR DAS SOBRAS
     fileiras_completas_sobras = []
     caixas_soltas_acumuladas = {}
 
@@ -364,6 +364,36 @@ def _gerar_pallets(carrinho, df_produtos):
 
             s["Restante"] = 0
 
+    # Tenta combinar caixas soltas do mesmo tipo para fechar fileiras completas adicionais
+    if caixas_soltas_acumuladas:
+        for tipo in tipos:
+            cpf = cx_fileira_do_tipo(tipo)
+            soltas_tipo = [sku for sku in caixas_soltas_acumuladas if skus[sku]["Ordem_Caixa"] == tipo]
+            soma_cx = sum(caixas_soltas_acumuladas[sku] for sku in soltas_tipo)
+
+            if soma_cx >= cpf:
+                fileiras_formadas = soma_cx // cpf
+                qtd_a_consumir = fileiras_formadas * cpf
+                itens_fileira = {}
+
+                for sku in soltas_tipo:
+                    if qtd_a_consumir <= 0:
+                        break
+                    pega = min(caixas_soltas_acumuladas[sku], qtd_a_consumir)
+                    itens_fileira[sku] = pega
+                    caixas_soltas_acumuladas[sku] -= pega
+                    qtd_a_consumir -= pega
+                    if caixas_soltas_acumuladas[sku] == 0:
+                        del caixas_soltas_acumuladas[sku]
+
+                alt = min(skus[k]["Altura"] for k in itens_fileira)
+                for _ in range(fileiras_formadas):
+                    fileiras_completas_sobras.append({
+                        "tipo": tipo,
+                        "altura": alt,
+                        "itens": itens_fileira
+                    })
+
     def juntar(lista_fileiras):
         itens = {}
         for f in lista_fileiras:
@@ -371,15 +401,15 @@ def _gerar_pallets(carrinho, df_produtos):
                 itens[sku] = itens.get(sku, 0) + qtd
         return itens
 
-    pals_sobras = []
+    # Empacota as fileiras de sobras sem estourar o limite de 5 fileiras por pallet
     curr_pallet_rows = []
     curr_fileiras_count = 0.0
 
     for f in fileiras_completas_sobras:
-        limite_pallet = min([skus[sku]["Altura"] for sku in f["itens"].keys()] or [4])
+        limite_pallet = min(min([skus[sku]["Altura"] for sku in f["itens"].keys()]), ALTURA_MAXIMA_GERAL)
 
-        if (curr_fileiras_count + 1.0 > limite_pallet or len(curr_pallet_rows) >= 4) and curr_pallet_rows:
-            pals_sobras.append(curr_pallet_rows)
+        if (curr_fileiras_count + 1.0 > limite_pallet) and curr_pallet_rows:
+            novo_pallet(TIPO_FILEIRAS_SOBRAS, juntar(curr_pallet_rows))
             curr_pallet_rows = []
             curr_fileiras_count = 0.0
 
@@ -387,14 +417,59 @@ def _gerar_pallets(carrinho, df_produtos):
         curr_fileiras_count += 1.0
 
     if curr_pallet_rows:
-        pals_sobras.append(curr_pallet_rows)
+        novo_pallet(TIPO_FILEIRAS_SOBRAS, juntar(curr_pallet_rows))
 
-    for p_rows in pals_sobras:
-        novo_pallet(TIPO_FILEIRAS_SOBRAS, juntar(p_rows))
-
-    # 4. APENAS O ÚLTIMO PALLET RECEBE AS SOBRAS E CAIXAS SOLTAS
+    # 4. ALOCAÇÃO EQUILIBRADA PARA O PENÚLTIMO E ÚLTIMO PALLET (Máx 5 Fileiras e Limite de Caixas)
     if caixas_soltas_acumuladas:
-        novo_pallet(TIPO_FINAL, caixas_soltas_acumuladas)
+        sobras_restantes = dict(caixas_soltas_acumuladas)
+
+        # Tenta aproveitar espaço livre no penúltimo pallet existente
+        if pallets:
+            penultimo = pallets[-1]
+            cx_atuais = sum(penultimo["itens"].values())
+            fileiras_atuais = fileiras_do_lote(penultimo["itens"])
+
+            limite_fileiras_pen = min([skus[k]["Altura"] for k in penultimo["itens"].keys()] + [ALTURA_MAXIMA_GERAL])
+            limite_cx_pen = min([skus[k]["Capacidade_Max"] for k in penultimo["itens"].keys()] + [100])
+
+            espaco_fileiras = limite_fileiras_pen - fileiras_atuais
+            espaco_cx = limite_cx_pen - cx_atuais
+
+            if espaco_fileiras > 0 and espaco_cx > 0:
+                for sku in list(sobras_restantes.keys()):
+                    qtd = sobras_restantes[sku]
+                    pode_pegar = min(qtd, espaco_cx)
+                    if pode_pegar > 0:
+                        penultimo["itens"][sku] = penultimo["itens"].get(sku, 0) + pode_pegar
+                        sobras_restantes[sku] -= pode_pegar
+                        espaco_cx -= pode_pegar
+                        if sobras_restantes[sku] == 0:
+                            del sobras_restantes[sku]
+
+        # Sobras finais direcionadas ao ÚLTIMO PALLET respeitando no máximo 5 fileiras e capacidade
+        if sobras_restantes:
+            curr_ult_itens = {}
+            curr_ult_cx = 0
+
+            for sku in list(sobras_restantes.keys()):
+                qtd = sobras_restantes[sku]
+                cpf = skus[sku]["Caixas_Por_Fileira"]
+                cap_max_sku = min(skus[sku]["Capacidade_Max"], cpf * ALTURA_MAXIMA_GERAL)
+
+                while qtd > 0:
+                    pode_colocar = min(qtd, cap_max_sku - curr_ult_cx)
+                    if pode_colocar <= 0:
+                        novo_pallet(TIPO_FINAL, curr_ult_itens)
+                        curr_ult_itens = {}
+                        curr_ult_cx = 0
+                        pode_colocar = min(qtd, cap_max_sku)
+
+                    curr_ult_itens[sku] = curr_ult_itens.get(sku, 0) + pode_colocar
+                    curr_ult_cx += pode_colocar
+                    qtd -= pode_colocar
+
+            if curr_ult_itens:
+                novo_pallet(TIPO_FINAL, curr_ult_itens)
 
     linhas = []
     for idx, p in enumerate(pallets, 1):
