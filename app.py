@@ -145,6 +145,7 @@ st.sidebar.info(f"""
 • **Caixa Nº:** {prod_info['NUMERO DA CAIXA']}  
 • **Peças / Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
 • **Caixas / Fileira:** {prod_info['QUANTIDADE DE CAIXAS POR FILEIRA']}  
+• **Altura Máxima:** {prod_info['ALTURA']} fileiras  
 • **Capacidade / Pallet:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx
 """)
 
@@ -228,7 +229,7 @@ else:
 
 st.markdown("---")
 
-# --- 6. REGRA DE PALETIZAÇÃO COMEX (OTIMIZADO - 12 PALLETS) ---
+# --- 6. REGRA DE PALETIZAÇÃO COMEX (ALTURA E CAPACIDADE MÁXIMAS RESPEITADAS) ---
 ALTURA_MAXIMA_FILEIRAS = 6
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU único, sequencial"
@@ -275,6 +276,7 @@ def _gerar_pallets(carrinho, df_produtos):
             ),
             1,
         )
+        # Respeita estritamente o limite de altura da base de dados e do teto físico (6 fileiras)
         altura = min(
             _fileiras_efetivas(
                 cx_fileira, prod["ALTURA"], prod["QUANTIDADE DE CAIXAS NO PALLET"]
@@ -289,7 +291,7 @@ def _gerar_pallets(carrinho, df_produtos):
             "Pecas_Por_Caixa": int(prod["QUANTIDADE DE PEÇAS"]),
             "Caixas_Por_Fileira": cx_fileira,
             "Altura": altura,
-            "Capacidade_Max": cx_fileira * altura,
+            "Capacidade_Max": cx_fileira * altura,  # Capacidade Máxima de Caixas
             "Restante": int(item["Qtd_Caixas"]),
         }
 
@@ -309,13 +311,13 @@ def _gerar_pallets(carrinho, df_produtos):
 
     ordem_skus = sorted(skus.values(), key=lambda s: (-s["Ordem_Caixa"], s["SKU"]))
 
-    # 1. PALLETS SEQUENCIAIS FECHADOS
+    # 1. PALLETS SEQUENCIAIS FECHADOS (Respeitando Capacidade Máxima)
     for s in ordem_skus:
         while s["Restante"] >= s["Capacidade_Max"]:
             novo_pallet(TIPO_SEQUENCIAL, {s["SKU"]: s["Capacidade_Max"]})
             s["Restante"] -= s["Capacidade_Max"]
 
-    # 2. COMBINAÇÃO DE MESMO TIPO DE CAIXA/ALTURA
+    # 2. COMBINAÇÃO DE MESMO TIPO DE CAIXA/ALTURA (Respeitando Altura Máxima)
     tipos = sorted({s["Ordem_Caixa"] for s in skus.values()}, reverse=True)
     for tipo in tipos:
         skus_tipo = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo]
@@ -344,7 +346,7 @@ def _gerar_pallets(carrinho, df_produtos):
                     break
                 fechar(escolha, TIPO_MESMA_ALTURA)
 
-    # 3. AGULHAMENTO DAS SOBRAS PARA FECHAR EM 12 PALLETS
+    # 3. AGULHAMENTO DAS SOBRAS (Garante teto de altura e capacidade)
     def montar_fileiras(tipo):
         cpf = cx_fileira_do_tipo(tipo)
         sobras = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0]
@@ -406,6 +408,7 @@ def _gerar_pallets(carrinho, df_produtos):
     pals_sobras = []
     curr_pallet = []
     for f in rows_completas:
+        # Garante no máximo 4 fileiras para sobras / respeita altura máxima
         if len(curr_pallet) < 4:
             curr_pallet.append(f)
         else:
@@ -443,6 +446,7 @@ def _gerar_pallets(carrinho, df_produtos):
                 "Nº Caixa": s["Nº Caixa"],
                 "Quantidade de Caixas": qtd,
                 "Caixas por Fileira": s["Caixas_Por_Fileira"],
+                "Altura (Fileiras)": s["Altura"],
                 "Total de Peças": qtd * s["Pecas_Por_Caixa"],
                 "Fileiras no Pallet": fileiras_pallet,
             })
@@ -487,7 +491,7 @@ def gerar_pdf(df_pallets, cliente, data_str):
     for pn in sorted(df_pallets["Pallet_Num"].unique()):
         df_p = df_pallets[df_pallets["Pallet_Num"] == pn]
         cx_pallet = int(df_p["Quantidade de Caixas"].sum())
-        
+
         if pdf.get_y() + (len(df_p) * 7) + 25 > 275:
             pdf.add_page()
 
@@ -495,10 +499,10 @@ def gerar_pdf(df_pallets, cliente, data_str):
         pdf.cell(0, 7, f"Pallet {pn}", border="B")
         pdf.ln(8)
 
-        larg = [28, 70, 20, 22, 28, 22]
+        larg = [25, 65, 18, 18, 22, 18, 24]
         pdf.set_font("Helvetica", "B", 8)
         pdf.set_fill_color(235, 235, 235)
-        headers = ["SKU", "Produto", "N. Caixa", "Qtd Cx", "Cx / Fileira", "Total Pecas"]
+        headers = ["SKU", "Produto", "N. Cx", "Qtd Cx", "Cx / Fileira", "Altura", "Total Pecas"]
         for w, t in zip(larg, headers):
             pdf.cell(w, 6, t, border=1, fill=True, align="C")
         pdf.ln()
@@ -506,13 +510,14 @@ def gerar_pdf(df_pallets, cliente, data_str):
         for _, row in df_p.iterrows():
             pdf.set_font("Helvetica", size=8)
             pdf.cell(larg[0], 6, str(row["SKU"]), border=1)
-            pdf.cell(larg[1], 6, _latin(row["Produto"])[:38], border=1)
+            pdf.cell(larg[1], 6, _latin(row["Produto"])[:35], border=1)
             pdf.cell(larg[2], 6, str(row["Nº Caixa"]), border=1, align="C")
             pdf.set_font("Helvetica", "B", 9)
             pdf.cell(larg[3], 6, str(row["Quantidade de Caixas"]), border=1, align="C")
             pdf.set_font("Helvetica", size=8)
             pdf.cell(larg[4], 6, str(row["Caixas por Fileira"]), border=1, align="C")
-            pdf.cell(larg[5], 6, str(row["Total de Peças"]), border=1, align="C")
+            pdf.cell(larg[5], 6, str(row["Altura (Fileiras)"]), border=1, align="C")
+            pdf.cell(larg[6], 6, str(row["Total de Peças"]), border=1, align="C")
             pdf.ln()
 
         pdf.set_font("Helvetica", "B", 10)
@@ -543,7 +548,7 @@ if st.session_state.processado and st.session_state.carrinho:
             df_pallets, nome_cliente_input, data_atual.strftime("%d/%m/%Y")
         )
         cliente_limpo = re.sub(r'[\\/*?:"<>|]', "", nome_cliente_input.strip()) or "CLIENTE"
-        
+
         st.download_button(
             label="📄 Baixar Relatório em PDF",
             data=pdf_bytes,
@@ -553,19 +558,20 @@ if st.session_state.processado and st.session_state.carrinho:
 
     st.markdown("---")
 
-    # Exibição individual pallet a pallet no layout exato solicitado
+    # Exibição individual pallet a pallet (Com Altura Incluída)
     for pn in sorted(df_pallets["Pallet_Num"].unique()):
         df_p = df_pallets[df_pallets["Pallet_Num"] == pn]
         total_cx_pallet = int(df_p["Quantidade de Caixas"].sum())
 
         with st.expander(f"📌 Pallet {pn}", expanded=True):
-            # Tabela no layout solicitado
+            # Tabela com a nova coluna 'Altura (Fileiras)'
             df_exibicao = df_p[[
                 "SKU",
                 "Produto",
                 "Nº Caixa",
                 "Quantidade de Caixas",
                 "Caixas por Fileira",
+                "Altura (Fileiras)",
                 "Total de Peças",
             ]].copy()
 
