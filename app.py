@@ -1215,7 +1215,6 @@ if st.session_state.processado and st.session_state.carrinho:
         total_pc = int(df_p["Total Peças"].sum())
         n_fil = int(df_p["Fileiras no Pallet"].iloc[0])
         camadas = montar_camadas(df_p)
-        posicoes = posicao_por_sku(camadas)
 
         titulo = f"📌 {gr['rotulo']} - Total de Caixas: {total_cx} cx | Total de Peças: {total_pc} peças | {n_fil} fileiras ({tipo_pallet})"
         if gr["n"] > 1:
@@ -1229,7 +1228,6 @@ if st.session_state.processado and st.session_state.carrinho:
 
             with aba_comp:
                 df_exibe = df_p.copy()
-                df_exibe["Posição (base→topo)"] = df_exibe["SKU"].map(posicoes)
                 st.dataframe(
                     df_exibe[[
                         "SKU",
@@ -1237,7 +1235,6 @@ if st.session_state.processado and st.session_state.carrinho:
                         "Nº Caixa",
                         "Qtd Caixas",
                         "Total Peças",
-                        "Posição (base→topo)",
                         "Caixas_Por_Fileira",
                         "Quantidade_Fileiras",
                     ]],
