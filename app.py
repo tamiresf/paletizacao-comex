@@ -1,12 +1,11 @@
 from datetime import datetime
 from fractions import Fraction
-import itertools
 import os
 import re
 import pandas as pd
 import streamlit as st
 
-# Importação condicional do FPDF
+# Importação condicional do FPDF para geração do PDF
 try:
     from fpdf import FPDF
 
@@ -19,7 +18,7 @@ st.set_page_config(
     page_title="Sistema de Paletização - MUSTAD", page_icon="📦", layout="wide"
 )
 
-# Estilização
+# Estilização CSS personalizada
 st.markdown(
     """
     <style>
@@ -33,22 +32,24 @@ st.markdown(
     .total-caixas-destaque {
         color: #0055B8;
         font-weight: bold;
-        font-size: 1.1em;
-        background-color: #F0F4F8;
-        padding: 6px 12px;
-        border-radius: 4px;
+        font-size: 1.25em;
+        background-color: #E6F0FA;
+        padding: 10px 18px;
+        border-radius: 6px;
+        border: 1px solid #0055B8;
         display: inline-block;
-        margin-top: 5px;
+        margin-top: 10px;
+        margin-bottom: 15px;
     }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
-st.title("📦 Sistema de Paletização - COMEX (Otimizado - 12 Pallets)")
+st.title("📦 Sistema de Paletização - COMEX (12 Pallets)")
 st.markdown("---")
 
-# --- 2. BASE DE DADOS E AUXILIARES ---
+# --- 2. BASE DE DADOS E CARREGAMENTO ---
 COLUNAS_ESSENCIAIS = [
     "NUMERO DA CAIXA",
     "QUANTIDADE DE PEÇAS",
@@ -113,7 +114,7 @@ caminhos_possiveis = ["COMEX.xlsx", "data/COMEX.xlsx"]
 CAMINHO_EXCEL = next((c for c in caminhos_possiveis if os.path.exists(c)), None)
 
 if not CAMINHO_EXCEL:
-    st.error("⚠️ O arquivo 'COMEX.xlsx' não foi encontrado.")
+    st.error("⚠️ O arquivo 'COMEX.xlsx' não foi encontrado no diretório.")
     st.stop()
 
 VERSAO_PLANILHA = os.path.getmtime(CAMINHO_EXCEL)
@@ -134,10 +135,18 @@ if "processado" not in st.session_state:
 # --- 4. PAINEL LATERAL ---
 st.sidebar.header("📋 Inserir Pedido")
 opcoes_produtos = df_produtos["SKU"] + " - " + df_produtos["NOME DO PRODUTO"]
-produto_selecionado = st.sidebar.selectbox("Pesquisar Produto:", options=opcoes_produtos)
+produto_selecionado = st.sidebar.selectbox("Pesquisar Produto (SKU ou Nome):", options=opcoes_produtos)
 
 sku_sel = produto_selecionado.split(" - ")[0]
 prod_info = df_produtos[df_produtos["SKU"] == sku_sel].iloc[0]
+
+st.sidebar.info(f"""
+**Informações do SKU:**  
+• **Caixa Nº:** {prod_info['NUMERO DA CAIXA']}  
+• **Peças / Caixa:** {prod_info['QUANTIDADE DE PEÇAS']}  
+• **Caixas / Fileira:** {prod_info['QUANTIDADE DE CAIXAS POR FILEIRA']}  
+• **Capacidade / Pallet:** {prod_info['QUANTIDADE DE CAIXAS NO PALLET']} cx
+""")
 
 qtd_solicitada = st.sidebar.number_input(
     "Qtd de Caixas Solicitada:",
@@ -163,19 +172,16 @@ if st.sidebar.button("➕ Adicionar ao Pedido"):
             "Caixas_Por_Fileira": int(prod_info["QUANTIDADE DE CAIXAS POR FILEIRA"]),
             "Quantidade_Fileiras": int(prod_info["ALTURA"]),
             "Capacidade_Pallet_Caixas": int(prod_info["QUANTIDADE DE CAIXAS NO PALLET"]),
-            "Capacidade_Pallet_Pecas": int(
-                prod_info["QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET"]
-            ),
         })
     st.session_state.processado = False
     st.sidebar.success("Item adicionado ao pedido!")
 
-# --- 5. IDENTIFICAÇÃO DO CLIENTE E PEDIDO ---
+# --- 5. IDENTIFICAÇÃO DO CLIENTE E CARRINHO ---
 st.markdown(
     """
 <div class="cliente-box">
     <h4 style="color: #0055B8; margin: 0 0 5px 0;">👤 Identificação do Cliente</h4>
-    <p style="color: #333; margin: 0; font-size: 0.9em;">Preencha o nome para personalizar o PDF.</p>
+    <p style="color: #333; margin: 0; font-size: 0.9em;">Informe a Razão Social/Cliente para personalização do relatório.</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -192,35 +198,43 @@ if st.session_state.carrinho:
 
     for index in range(len(st.session_state.carrinho) - 1, -1, -1):
         item = st.session_state.carrinho[index]
-        c1, c2, c3, c4, c5 = st.columns([1.5, 3, 1.2, 1.3, 0.8])
+        pecas_cx = item.get("Pecas_Por_Caixa", 1)
+        total_pecas_item = item["Qtd_Caixas"] * pecas_cx
+
+        c1, c2, c3, c4, c5, c6 = st.columns([1.5, 3, 1.2, 1.3, 1.5, 0.8])
         c1.write(f"**SKU:** {item['SKU']}")
         c2.write(f"**Produto:** {item['Produto']}")
         c3.write(f"**Caixa Nº:** {item['Nº Caixa']}")
         c4.write(f"**Qtd:** {item['Qtd_Caixas']} cx")
-        if c5.button("🗑️", key=f"rem_{index}_{item['SKU']}"):
+        c5.write(f"**Total Peças:** {total_pecas_item:,}".replace(",", "."))
+
+        if c6.button("🗑️", key=f"rem_{index}_{item['SKU']}"):
             st.session_state.carrinho.pop(index)
             st.session_state.processado = False
             st.rerun()
 
+    st.markdown("---")
     m1, m2, m3 = st.columns([2, 2, 2])
     m1.metric("📦 Total de Caixas", f"{total_caixas_pedido:,} cx".replace(",", "."))
     m2.metric("🧩 Total de Peças", f"{total_pecas_pedido:,} peças".replace(",", "."))
+
     with m3:
         if st.button("🔴 Limpar Pedido", use_container_width=True):
             st.session_state.carrinho = []
             st.session_state.processado = False
             st.rerun()
+else:
+    st.info("Nenhum item adicionado ao pedido.")
 
 st.markdown("---")
 
-# --- 6. ALGORITMO COMEX - OTIMIZAÇÃO MAXIMA DE PALLETS ---
+# --- 6. REGRA DE PALETIZAÇÃO COMEX (OTIMIZADO - 12 PALLETS) ---
 ALTURA_MAXIMA_FILEIRAS = 6
 
-TIPO_SEQUENCIAL = "Pallet Fechado - SKU unico, sequencial 🟢"
-TIPO_MESMA_ALTURA = "Pallet Fechado - mesma caixa e mesma altura 🟢"
-TIPO_ALTURAS_DIFERENTES = "Pallet Fechado - mesma caixa, alturas diferentes 🟡"
-TIPO_FILEIRAS_SOBRAS = "Pallet Fechado - fileiras completas de sobras 🟢"
-TIPO_FINAL = "Pallet Final (caixas soltas e sobras) 🟠"
+TIPO_SEQUENCIAL = "Pallet Fechado - SKU único, sequencial"
+TIPO_MESMA_ALTURA = "Pallet Fechado - mesma caixa e mesma altura"
+TIPO_FILEIRAS_SOBRAS = "Pallet Fechado - fileiras de sobras"
+TIPO_FINAL = "Pallet Final (caixas soltas e sobras)"
 
 
 def _achar_combinacao_exata(unidades, alvo):
@@ -249,18 +263,7 @@ def _achar_combinacao_exata(unidades, alvo):
     return [unidades[i] for i in achado] if achado is not None else None
 
 
-def _particoes(itens):
-    if not itens:
-        yield []
-        return
-    primeiro, resto = itens[0], itens[1:]
-    for p in _particoes(resto):
-        yield [[primeiro]] + p
-        for i in range(len(p)):
-            yield p[:i] + [[primeiro] + p[i]] + p[i + 1:]
-
-
-def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
+def _gerar_pallets(carrinho, df_produtos):
     skus = {}
     padrao_tipo = _cpf_padrao_por_tipo(df_produtos)
     for item in carrinho:
@@ -341,7 +344,7 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
                     break
                 fechar(escolha, TIPO_MESMA_ALTURA)
 
-    # 3. CONSOLIDAÇÃO OTIMIZADA DAS SOBRAS (AGRUPAMENTO OPERATORIAL)
+    # 3. AGULHAMENTO DAS SOBRAS PARA FECHAR EM 12 PALLETS
     def montar_fileiras(tipo):
         cpf = cx_fileira_do_tipo(tipo)
         sobras = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0]
@@ -400,7 +403,6 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
 
     rows_completas = [f for _, fl in fileiras_todas for f in fl]
 
-    # Agrupa em pallets mantendo a meta máxima de 12 pallets
     pals_sobras = []
     curr_pallet = []
     for f in rows_completas:
@@ -434,28 +436,93 @@ def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
             s = skus[sku]
             linhas.append({
                 "Pallet_Num": idx,
-                "ID": f"Pallet {idx:02d}",
+                "ID": f"Pallet {idx}",
                 "Tipo": p["tipo"],
                 "SKU": sku,
                 "Produto": s["Produto"],
                 "Nº Caixa": s["Nº Caixa"],
-                "Caixas_Por_Fileira": s["Caixas_Por_Fileira"],
-                "Quantidade_Fileiras": s["Altura"],
-                "Qtd Caixas": qtd,
+                "Quantidade de Caixas": qtd,
+                "Caixas por Fileira": s["Caixas_Por_Fileira"],
+                "Total de Peças": qtd * s["Pecas_Por_Caixa"],
                 "Fileiras no Pallet": fileiras_pallet,
-                "Total Peças": qtd * s["Pecas_Por_Caixa"],
-                "Ordem_Caixa": s["Ordem_Caixa"],
-                "Cx_Fileira_Tipo": cx_fileira_do_tipo(s["Ordem_Caixa"]),
-                "Cap_Pallet_Caixas": s["Capacidade_Max"],
             })
     return pd.DataFrame(linhas)
 
 
-def processar_pallets_operador(carrinho, df_produtos):
-    return _gerar_pallets(carrinho, df_produtos)
+# --- 7. GERADOR DE PDF ---
+def _latin(txt):
+    return str(txt).encode("latin-1", "replace").decode("latin-1")
 
 
-# --- 7. EXIBIÇÃO E RESULTADOS ---
+def gerar_pdf(df_pallets, cliente, data_str):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "MUSTAD - Relatorio de Paletizacao", align="C")
+    pdf.ln(7)
+
+    nome_cliente = cliente.strip() if cliente else "Nao Informado"
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 6, f"Cliente: {_latin(nome_cliente)}", align="C")
+    pdf.ln(5)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 5, f"Data de Emissao: {data_str}", align="C")
+    pdf.ln(5)
+
+    n_pallets = int(df_pallets["Pallet_Num"].nunique())
+    total_cx = int(df_pallets["Quantidade de Caixas"].sum())
+    total_pc = int(df_pallets["Total de Peças"].sum())
+    pdf.cell(0, 5, f"{n_pallets} pallets | {total_pc} pecas", align="C")
+    pdf.ln(8)
+
+    pdf.set_fill_color(0, 85, 184)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 12, f"TOTAL GERAL DA CARGA: {total_cx} CAIXAS", align="C", fill=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(15)
+
+    for pn in sorted(df_pallets["Pallet_Num"].unique()):
+        df_p = df_pallets[df_pallets["Pallet_Num"] == pn]
+        cx_pallet = int(df_p["Quantidade de Caixas"].sum())
+        
+        if pdf.get_y() + (len(df_p) * 7) + 25 > 275:
+            pdf.add_page()
+
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(0, 7, f"Pallet {pn}", border="B")
+        pdf.ln(8)
+
+        larg = [28, 70, 20, 22, 28, 22]
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_fill_color(235, 235, 235)
+        headers = ["SKU", "Produto", "N. Caixa", "Qtd Cx", "Cx / Fileira", "Total Pecas"]
+        for w, t in zip(larg, headers):
+            pdf.cell(w, 6, t, border=1, fill=True, align="C")
+        pdf.ln()
+
+        for _, row in df_p.iterrows():
+            pdf.set_font("Helvetica", size=8)
+            pdf.cell(larg[0], 6, str(row["SKU"]), border=1)
+            pdf.cell(larg[1], 6, _latin(row["Produto"])[:38], border=1)
+            pdf.cell(larg[2], 6, str(row["Nº Caixa"]), border=1, align="C")
+            pdf.set_font("Helvetica", "B", 9)
+            pdf.cell(larg[3], 6, str(row["Quantidade de Caixas"]), border=1, align="C")
+            pdf.set_font("Helvetica", size=8)
+            pdf.cell(larg[4], 6, str(row["Caixas por Fileira"]), border=1, align="C")
+            pdf.cell(larg[5], 6, str(row["Total de Peças"]), border=1, align="C")
+            pdf.ln()
+
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(0, 7, f"Quantidade de caixas no Pallet {pn}: {cx_pallet} caixas", align="R")
+        pdf.ln(10)
+
+    return bytes(pdf.output())
+
+
+# --- 8. EXECUÇÃO E EXIBIÇÃO DE RESULTADOS ---
 if st.button("⚙️ CALCULAR E GERAR PALLETS"):
     if not st.session_state.carrinho:
         st.warning("Adicione itens ao pedido antes de calcular.")
@@ -463,10 +530,55 @@ if st.button("⚙️ CALCULAR E GERAR PALLETS"):
         st.session_state.processado = True
 
 if st.session_state.processado and st.session_state.carrinho:
-    df_pallets = processar_pallets_operador(st.session_state.carrinho, df_produtos)
+    df_pallets = _gerar_pallets(st.session_state.carrinho, df_produtos)
     n_pallets = int(df_pallets["Pallet_Num"].nunique())
 
     st.subheader("📦 Resultado da Paletização")
-    st.success(f"**Total de Pallets Gerados:** {n_pallets} (Otimizado conforme montagem do operador)")
+    st.success(f"**Total de Pallets Gerados:** {n_pallets} Pallets")
 
-    st.dataframe(df_pallets[["ID", "SKU", "Produto", "Nº Caixa", "Qtd Caixas", "Total Peças", "Tipo"]], use_container_width=True)
+    # Botão de Download do PDF
+    if FPDF_DISPONIVEL:
+        data_atual = datetime.now()
+        pdf_bytes = gerar_pdf(
+            df_pallets, nome_cliente_input, data_atual.strftime("%d/%m/%Y")
+        )
+        cliente_limpo = re.sub(r'[\\/*?:"<>|]', "", nome_cliente_input.strip()) or "CLIENTE"
+        
+        st.download_button(
+            label="📄 Baixar Relatório em PDF",
+            data=pdf_bytes,
+            file_name=f"PALETIZACAO_{cliente_limpo}_{data_atual.strftime('%d-%m-%Y')}.pdf",
+            mime="application/pdf",
+        )
+
+    st.markdown("---")
+
+    # Exibição individual pallet a pallet no layout exato solicitado
+    for pn in sorted(df_pallets["Pallet_Num"].unique()):
+        df_p = df_pallets[df_pallets["Pallet_Num"] == pn]
+        total_cx_pallet = int(df_p["Quantidade de Caixas"].sum())
+
+        with st.expander(f"📌 Pallet {pn}", expanded=True):
+            # Tabela no layout solicitado
+            df_exibicao = df_p[[
+                "SKU",
+                "Produto",
+                "Nº Caixa",
+                "Quantidade de Caixas",
+                "Caixas por Fileira",
+                "Total de Peças",
+            ]].copy()
+
+            st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
+
+            # Resumo final do pallet (Quantidade de Caixas no Pallet)
+            st.markdown(
+                f"""
+                <div style="text-align: right;">
+                    <span class="total-caixas-destaque">
+                        📦 Quantidade de Caixas no Pallet {pn}: <b>{total_cx_pallet} caixas</b>
+                    </span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
