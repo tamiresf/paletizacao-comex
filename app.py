@@ -223,7 +223,7 @@ else:
 
 st.markdown("---")
 
-# --- 6. REGRA DE PALETIZAÇÃO COMEX (CONTROLE RÍGIDO DE CAPACIDADE MÁXIMA) ---
+# --- 6. REGRA DE PALETIZAÇÃO COMEX (AGRUPAMENTO E ORDENAÇÃO DE CAIXAS) ---
 ALTURA_MAXIMA_FILEIRAS = 6
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU único, sequencial"
@@ -302,7 +302,7 @@ def _gerar_pallets(carrinho, df_produtos):
             por_tipo[skus[sku]["Ordem_Caixa"]] = por_tipo.get(skus[sku]["Ordem_Caixa"], 0) + qtd
         return sum(-(-qtd // cx_fileira_do_tipo(t)) for t, qtd in por_tipo.items())
 
-    ordem_skus = sorted(skus.values(), key=lambda s: (-s["Ordem_Caixa"], s["SKU"]))
+    ordem_skus = sorted(skus.values(), key=lambda s: (s["Ordem_Caixa"], s["SKU"]))
 
     # 1. PALLETS SEQUENCIAIS FECHADOS
     for s in ordem_skus:
@@ -311,7 +311,7 @@ def _gerar_pallets(carrinho, df_produtos):
             s["Restante"] -= s["Capacidade_Max"]
 
     # 2. COMBINAÇÃO DE MESMO TIPO DE CAIXA/ALTURA
-    tipos = sorted({s["Ordem_Caixa"] for s in skus.values()}, reverse=True)
+    tipos = sorted({s["Ordem_Caixa"] for s in skus.values()})
     for tipo in tipos:
         skus_tipo = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo]
 
@@ -339,7 +339,7 @@ def _gerar_pallets(carrinho, df_produtos):
                     break
                 fechar(escolha, TIPO_MESMA_ALTURA)
 
-    # 3. AGULHAMENTO DAS SOBRAS E CAIXAS SOLTAS COM LIMITAÇÃO RÍGIDA
+    # 3. AGULHAMENTO DAS SOBRAS E CAIXAS SOLTAS COM AGRUPAMENTO POR TIPO DE CAIXA
     def montar_fileiras(tipo):
         cpf = cx_fileira_do_tipo(tipo)
         sobras = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0]
@@ -396,7 +396,7 @@ def _gerar_pallets(carrinho, df_produtos):
                 itens[sku] = itens.get(sku, 0) + qtd
         return itens
 
-    # Processamento controlado de sobras respeitando capacidade e altura máxima por pallet
+    # Processamento e agrupamento das sobras garantindo que caixas do mesmo tipo fiquem juntas
     todas_sobras_rows = [f for _, fl in fileiras_todas for f in fl]
     if soltas_por_tipo:
         for s in soltas_por_tipo:
@@ -407,19 +407,14 @@ def _gerar_pallets(carrinho, df_produtos):
                 "solta": True,
             })
 
-    # Agrupamento com verificação rígida de transbordo
     pals_sobras = []
     curr_pallet_rows = []
     curr_fileiras_count = 0.0
 
     for f in todas_sobras_rows:
-        # Calcula a fração equivalente de fileiras da entrada
         fracao_fileira = sum(qtd / skus[sku]["Caixas_Por_Fileira"] for sku, qtd in f["itens"].items())
-        
-        # Limite máximo de fileiras (capacidade máxima do pallet)
         limite_pallet = min([skus[sku]["Altura"] for sku in f["itens"].keys()] or [4])
 
-        # Se ultrapassar a capacidade limite do pallet, cria um novo pallet
         if (curr_fileiras_count + fracao_fileira > limite_pallet or len(curr_pallet_rows) >= 4) and curr_pallet_rows:
             pals_sobras.append(curr_pallet_rows)
             curr_pallet_rows = []
@@ -437,11 +432,12 @@ def _gerar_pallets(carrinho, df_produtos):
 
     linhas = []
     for idx, p in enumerate(pallets, 1):
+        # Ordenação rigorosa por "Nº Caixa" (Ordem_Caixa) para que caixas do mesmo tipo fiquem agrupadas consecutivamente (uma embaixo da outra)
         def chave_empilhamento(kv):
             sku, qtd = kv
             s = skus[sku]
-            eh_sobra_fracionada = 1 if (qtd % s["Caixas_Por_Fileira"] != 0) else 0
-            return (eh_sobra_fracionada, -s["Ordem_Caixa"], sku)
+            # Agrupa por Nº Caixa (Ordem_Caixa) e depois por SKU
+            return (s["Ordem_Caixa"], sku)
 
         itens_ord = sorted(p["itens"].items(), key=chave_empilhamento)
         fileiras_pallet = fileiras_do_lote(p["itens"])
@@ -549,7 +545,6 @@ if st.session_state.processado and st.session_state.carrinho:
     st.subheader("📦 Resultado da Paletização")
     st.success(f"**Total de Pallets Gerados:** {n_pallets} Pallets")
 
-    # Botão de Download do PDF
     if FPDF_DISPONIVEL:
         data_atual = datetime.now()
         pdf_bytes = gerar_pdf(
@@ -566,7 +561,6 @@ if st.session_state.processado and st.session_state.carrinho:
 
     st.markdown("---")
 
-    # Exibição individual pallet a pallet
     for pn in sorted(df_pallets["Pallet_Num"].unique()):
         df_p = df_pallets[df_pallets["Pallet_Num"] == pn]
         total_cx_pallet = int(df_p["Quantidade de Caixas"].sum())
@@ -583,7 +577,6 @@ if st.session_state.processado and st.session_state.carrinho:
 
             st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
 
-            # Resumo final do pallet
             st.markdown(
                 f"""
                 <div style="text-align: right;">
