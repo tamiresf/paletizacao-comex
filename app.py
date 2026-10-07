@@ -8,7 +8,6 @@ import streamlit as st
 # Importação condicional do FPDF para geração do PDF
 try:
     from fpdf import FPDF
-
     FPDF_DISPONIVEL = True
 except ImportError:
     FPDF_DISPONIVEL = False
@@ -224,7 +223,7 @@ else:
 
 st.markdown("---")
 
-# --- 6. REGRA DE PALETIZAÇÃO COMEX (ALTURA E CAPACIDADE MÁXIMAS RESPEITADAS) ---
+# --- 6. REGRA DE PALETIZAÇÃO COMEX (CONTROLE RÍGIDO DE CAPACIDADE MÁXIMA) ---
 ALTURA_MAXIMA_FILEIRAS = 6
 
 TIPO_SEQUENCIAL = "Pallet Fechado - SKU único, sequencial"
@@ -340,7 +339,7 @@ def _gerar_pallets(carrinho, df_produtos):
                     break
                 fechar(escolha, TIPO_MESMA_ALTURA)
 
-    # 3. AGULHAMENTO DAS SOBRAS
+    # 3. AGULHAMENTO DAS SOBRAS E CAIXAS SOLTAS COM LIMITAÇÃO RÍGIDA
     def montar_fileiras(tipo):
         cpf = cx_fileira_do_tipo(tipo)
         sobras = [s for s in ordem_skus if s["Ordem_Caixa"] == tipo and s["Restante"] > 0]
@@ -397,38 +396,47 @@ def _gerar_pallets(carrinho, df_produtos):
                 itens[sku] = itens.get(sku, 0) + qtd
         return itens
 
-    rows_completas = [f for _, fl in fileiras_todas for f in fl]
-
-    pals_sobras = []
-    curr_pallet = []
-    for f in rows_completas:
-        if len(curr_pallet) < 4:
-            curr_pallet.append(f)
-        else:
-            pals_sobras.append({"rows": curr_pallet, "solta": False})
-            curr_pallet = [f]
-    if curr_pallet:
-        pals_sobras.append({"rows": curr_pallet, "solta": False})
-
+    # Processamento controlado de sobras respeitando capacidade e altura máxima por pallet
+    todas_sobras_rows = [f for _, fl in fileiras_todas for f in fl]
     if soltas_por_tipo:
-        soltas_itens = {}
         for s in soltas_por_tipo:
-            for k, v in s["itens"].items():
-                soltas_itens[k] = soltas_itens.get(k, 0) + v
-        if pals_sobras:
-            for k, v in soltas_itens.items():
-                pals_sobras[-1]["rows"].append({"tipo": skus[k]["Ordem_Caixa"], "altura": skus[k]["Altura"], "itens": {k: v}, "solta": True})
-        else:
-            pals_sobras.append({"rows": [{"tipo": skus[k]["Ordem_Caixa"], "altura": skus[k]["Altura"], "itens": {k: v}, "solta": True} for k, v in soltas_itens.items()], "solta": True})
+            todas_sobras_rows.append({
+                "tipo": s["tipo"],
+                "altura": s["altura"],
+                "itens": s["itens"],
+                "solta": True,
+            })
 
-    for p in pals_sobras:
-        novo_pallet(TIPO_FILEIRAS_SOBRAS if not any(r.get("solta") for r in p["rows"]) else TIPO_FINAL, juntar(p["rows"]))
+    # Agrupamento com verificação rígida de transbordo
+    pals_sobras = []
+    curr_pallet_rows = []
+    curr_fileiras_count = 0.0
+
+    for f in todas_sobras_rows:
+        # Calcula a fração equivalente de fileiras da entrada
+        fracao_fileira = sum(qtd / skus[sku]["Caixas_Por_Fileira"] for sku, qtd in f["itens"].items())
+        
+        # Limite máximo de fileiras (capacidade máxima do pallet)
+        limite_pallet = min([skus[sku]["Altura"] for sku in f["itens"].keys()] or [4])
+
+        # Se ultrapassar a capacidade limite do pallet, cria um novo pallet
+        if (curr_fileiras_count + fracao_fileira > limite_pallet or len(curr_pallet_rows) >= 4) and curr_pallet_rows:
+            pals_sobras.append(curr_pallet_rows)
+            curr_pallet_rows = []
+            curr_fileiras_count = 0.0
+
+        curr_pallet_rows.append(f)
+        curr_fileiras_count += fracao_fileira
+
+    if curr_pallet_rows:
+        pals_sobras.append(curr_pallet_rows)
+
+    for p_rows in pals_sobras:
+        tem_solta = any(r.get("solta") for r in p_rows)
+        novo_pallet(TIPO_FINAL if tem_solta else TIPO_FILEIRAS_SOBRAS, juntar(p_rows))
 
     linhas = []
     for idx, p in enumerate(pallets, 1):
-        # Regra de Ordenação Física do Pallet:
-        # 1. Fileiras completas na base -> Caixas com numeração maior (-Ordem_Caixa) na base, menor no topo.
-        # 2. Sobras/caixas soltas fracionadas -> Sempre por último (no topo do pallet).
         def chave_empilhamento(kv):
             sku, qtd = kv
             s = skus[sku]
@@ -503,7 +511,7 @@ def gerar_pdf(df_pallets, cliente, data_str):
         larg = [30, 75, 20, 22, 25, 18]
         pdf.set_font("Helvetica", "B", 8)
         pdf.set_fill_color(235, 235, 235)
-        
+
         for w, t in zip(larg, headers):
             pdf.cell(w, 6, t, border=1, fill=True, align="C")
         pdf.ln()
@@ -575,7 +583,7 @@ if st.session_state.processado and st.session_state.carrinho:
 
             st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
 
-            # Resumo final do pallet (Quantidade de Caixas no Pallet)
+            # Resumo final do pallet
             st.markdown(
                 f"""
                 <div style="text-align: right;">
