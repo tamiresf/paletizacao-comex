@@ -68,13 +68,22 @@ def _fileiras_efetivas(cx_fileira, altura, capacidade):
     return max(min(int(altura), max(int(capacidade) // cx_fileira, 1)), 1)
 
 
+def _cpf_padrao_por_tipo(df, coluna_tipo="Ordem_Caixa"):
+    """Caixas por fileira PADRÃO de cada tipo de caixa (o valor mais comum na
+    planilha: tipo 0 = 25, 1 = 20, 2 = 16, 3 = 12). A fileira segue sempre o tipo."""
+    return {
+        int(t): int(g["QUANTIDADE DE CAIXAS POR FILEIRA"].mode().iloc[0])
+        for t, g in df.groupby(coluna_tipo)
+    }
+
+
 @st.cache_data
 def carregar_base(caminho_excel, versao=None):
-    df = pd.read_excel(caminho_excel)
+    df = pd.read_excel(caminho_excel, sheet_name=0)  # sempre a PRIMEIRA aba
     df.columns = df.columns.str.strip()
 
-    # linhas sem dados de paletização (SKU cadastrado mas sem caixa/fileira/altura)
-    # NÃO entram: antes viravam "1 caixa por pallet" e distorciam o cálculo
+    # linhas sem dados de paletização são ignoradas em silêncio (sem aviso):
+    # antes viravam "1 caixa por pallet" e distorciam o cálculo
     df = df.dropna(subset=COLUNAS_ESSENCIAIS).copy()
 
     df["SKU"] = df["SKU"].astype(str).str.strip()
@@ -114,32 +123,34 @@ def carregar_base(caminho_excel, versao=None):
 
 @st.cache_data
 def diagnosticar_base(caminho_excel, versao=None):
-    """Problemas de cadastro da planilha, SKU a SKU (só o que está nela AGORA).
-    'versao' (data de gravação do arquivo) entra na chave do cache: ao salvar a
-    planilha de novo, o diagnóstico é refeito sozinho."""
+    """SKUs cuja capacidade não bate com caixas/fileira x altura, só do que está na
+    planilha AGORA. Linhas sem dados são ignoradas sem aviso. 'versao' (data de
+    gravação do arquivo) entra na chave do cache: ao salvar a planilha de novo, o
+    diagnóstico é refeito sozinho."""
     planilha = pd.ExcelFile(caminho_excel)
     aba = planilha.sheet_names[0]
     bruto = pd.read_excel(planilha, sheet_name=aba)
     bruto.columns = bruto.columns.str.strip()
-    bruto = bruto[bruto["SKU"].notna()]
+    bruto = bruto[bruto["SKU"].notna()].dropna(subset=COLUNAS_ESSENCIAIS).copy()
+    bruto["_tipo"] = pd.to_numeric(bruto["NUMERO DA CAIXA"], errors="coerce")
+    padrao = _cpf_padrao_por_tipo(bruto.dropna(subset=["_tipo"]), "_tipo")
 
-    sem_dados, inconsistentes = [], []
+    inconsistentes = []
     for _, r in bruto.iterrows():
-        sku = str(r["SKU"]).strip()
-        produto = str(r["NOME DO PRODUTO"]).strip()
-        faltando = [c for c in COLUNAS_ESSENCIAIS if pd.isna(r[c])]
-        if faltando:
-            sem_dados.append({"sku": sku, "produto": produto, "faltando": faltando})
-            continue
         cpf, alt = int(r["QUANTIDADE DE CAIXAS POR FILEIRA"]), int(r["ALTURA"])
         cap = int(r["QUANTIDADE DE CAIXAS NO PALLET"])
-        if cap != cpf * alt:
-            usa = _fileiras_efetivas(cpf, alt, cap)
+        tipo = None if pd.isna(r["_tipo"]) else int(r["_tipo"])
+        cpf_pad = padrao.get(tipo, cpf)
+        if cpf != cpf_pad or cap != cpf * alt:
+            usa = _fileiras_efetivas(cpf_pad, alt, cap)
             inconsistentes.append({
-                "sku": sku, "produto": produto, "cap": cap, "cpf": cpf, "alt": alt,
-                "usa_fil": usa, "usa_cx": usa * max(cpf, 1),
+                "sku": str(r["SKU"]).strip(),
+                "produto": str(r["NOME DO PRODUTO"]).strip(),
+                "tipo": tipo, "cap": cap, "cpf": cpf, "cpf_pad": cpf_pad, "alt": alt,
+                "usa_fil": usa, "usa_cx": usa * max(cpf_pad, 1),
+                "motivo": "cpf" if cpf != cpf_pad else "cap",
             })
-    return aba, sem_dados, inconsistentes
+    return aba, inconsistentes
 
 
 caminhos_possiveis = ["COMEX.xlsx", "data/COMEX.xlsx"]
@@ -164,28 +175,30 @@ except Exception as e:
     st.error(f"Erro ao carregar a base de dados ({CAMINHO_EXCEL}): {e}")
     st.stop()
 
-_aba, _sem_dados, _inconsistentes = diagnosticar_base(CAMINHO_EXCEL, VERSAO_PLANILHA)
+_aba, _inconsistentes = diagnosticar_base(CAMINHO_EXCEL, VERSAO_PLANILHA)
 st.caption(
     f"📄 Planilha lida: {CAMINHO_EXCEL} (aba '{_aba}') - salva em "
     f"{datetime.fromtimestamp(VERSAO_PLANILHA).strftime('%d/%m/%Y %H:%M')}"
 )
-if _sem_dados or _inconsistentes:
+if _inconsistentes:
     with st.expander(
-        f"⚠️ Erro na planilha {CAMINHO_EXCEL}: {len(_sem_dados) + len(_inconsistentes)} SKU(s) "
-        "com cadastro incorreto",
+        f"⚠️ Erro na planilha {CAMINHO_EXCEL}: {len(_inconsistentes)} SKU(s) com cadastro incorreto",
         expanded=True,
     ):
-        for p in _sem_dados:
-            st.markdown(
-                f"- **Erro na planilha - SKU {p['sku']}** ({p['produto']}): faltam dados "
-                f"({', '.join(c.lower() for c in p['faltando'])}). SKU ignorado: não aparece na busca."
-            )
         for p in _inconsistentes:
+            if p["motivo"] == "cpf":
+                detalhe = (
+                    f"caixa tipo {p['tipo']} usa {p['cpf_pad']} cx/fileira, mas a planilha "
+                    f"traz {p['cpf']} cx/fileira (capacidade {p['cap']} cx, altura {p['alt']})"
+                )
+            else:
+                detalhe = (
+                    f"capacidade cadastrada {p['cap']} cx, mas {p['cpf']} cx/fileira × "
+                    f"altura {p['alt']} = {p['cpf'] * p['alt']} cx"
+                )
             st.markdown(
-                f"- **Erro na planilha - SKU {p['sku']}** ({p['produto']}): capacidade "
-                f"cadastrada {p['cap']} cx, mas {p['cpf']} cx/fileira × altura {p['alt']} = "
-                f"{p['cpf'] * p['alt']} cx. O sistema está usando {p['usa_fil']} fileiras "
-                f"({p['usa_cx']} cx) por pallet."
+                f"- **Erro na planilha - SKU {p['sku']}** ({p['produto']}): {detalhe}. "
+                f"O sistema está usando {p['usa_fil']} fileiras ({p['usa_cx']} cx) por pallet."
             )
         st.caption(
             "Corrija a linha na planilha e salve: o aviso atualiza sozinho na próxima "
@@ -219,14 +232,19 @@ st.sidebar.info(f"""
 • **Capacidade Peças / Pallet:** {prod_info['QUANTIDADE DE UNIDADE DE PEÇAS NO PALLET']} peças
 """)
 
-_cpf_sel = int(prod_info["QUANTIDADE DE CAIXAS POR FILEIRA"])
-if int(prod_info["QUANTIDADE DE CAIXAS NO PALLET"]) != _cpf_sel * int(prod_info["ALTURA"]):
+_cpf_sel = _cpf_padrao_por_tipo(df_produtos).get(
+    int(prod_info["Ordem_Caixa"]), int(prod_info["QUANTIDADE DE CAIXAS POR FILEIRA"])
+)
+if (
+    int(prod_info["QUANTIDADE DE CAIXAS POR FILEIRA"]) != _cpf_sel
+    or int(prod_info["QUANTIDADE DE CAIXAS NO PALLET"]) != _cpf_sel * int(prod_info["ALTURA"])
+):
     _usa = _fileiras_efetivas(
         _cpf_sel, prod_info["ALTURA"], prod_info["QUANTIDADE DE CAIXAS NO PALLET"]
     )
     st.sidebar.warning(
-        "Cadastro inconsistente: capacidade ≠ caixas/fileira × altura. "
-        f"O sistema usa {_usa} fileiras ({_usa * _cpf_sel} cx) por pallet."
+        "Erro na planilha neste SKU: caixas/fileira ou capacidade não batem com o tipo "
+        f"de caixa e a altura. O sistema usa {_usa} fileiras ({_usa * _cpf_sel} cx) por pallet."
     )
 
 qtd_solicitada = st.sidebar.number_input(
@@ -384,10 +402,16 @@ def _particoes(itens):
 def _gerar_pallets(carrinho, df_produtos, ordem_residuos="desc"):
     # --- Preparação dos SKUs do pedido ---
     skus = {}
+    padrao_tipo = _cpf_padrao_por_tipo(df_produtos)
     for item in carrinho:
         sku = str(item["SKU"]).strip()
         prod = df_produtos[df_produtos["SKU"] == sku].iloc[0]
-        cx_fileira = max(int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"]), 1)
+        cx_fileira = max(
+            padrao_tipo.get(
+                int(prod.get("Ordem_Caixa", 0)), int(prod["QUANTIDADE DE CAIXAS POR FILEIRA"])
+            ),
+            1,
+        )
         altura = min(
             _fileiras_efetivas(
                 cx_fileira, prod["ALTURA"], prod["QUANTIDADE DE CAIXAS NO PALLET"]
