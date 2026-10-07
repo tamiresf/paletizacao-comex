@@ -1056,37 +1056,47 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
     n_pallets = int(df_pallets["Pallet_Num"].nunique())
     total_cx = int(df_pallets["Qtd Caixas"].sum())
     total_pc = int(df_pallets["Total Peças"].sum())
-    pdf.cell(
-        0, 5, f"{n_pallets} pallets | {total_cx} caixas | {total_pc} peças", align="C"
-    )
-    pdf.ln(10)
+    pdf.cell(0, 5, f"{n_pallets} pallets | {total_pc} peças", align="C")
+    pdf.ln(8)
+
+    # Caixa de destaque: TOTAL DE CAIXAS
+    pdf.set_fill_color(30, 30, 30)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.cell(0, 14, f"TOTAL DE CAIXAS: {total_cx}", align="C", fill=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(18)
 
     # ---- Lista de separação (cada SKU uma vez, com destino) ----
     pdf.set_font("Helvetica", "B", 11)
     pdf.cell(0, 7, "Lista de Separação (por SKU)", border="B")
     pdf.ln(9)
-    larguras = [20, 44, 12, 16, 20, 78]
+    larguras = [22, 50, 14, 22, 24, 58]
     cab_sep = ["SKU", "Produto", "N. Cx", "Total Cx", "Total Peças", "Vai para"]
 
     def cabecalho_sep():
         pdf.set_font("Helvetica", "B", 8)
+        pdf.set_fill_color(235, 235, 235)
         for w, t in zip(larguras, cab_sep):
-            pdf.cell(w, 6, t, border=1)
+            pdf.cell(w, 6, t, border=1, fill=True)
         pdf.ln()
         pdf.set_font("Helvetica", size=8)
 
     cabecalho_sep()
     for _, r in lista_separacao(df_pallets).iterrows():
-        destino = textwrap.wrap(_latin(r["Vai para"]), 50) or [""]
+        destino = textwrap.wrap(_latin(r["Vai para"]), 38) or [""]
         h = 5 * len(destino)
         if pdf.get_y() + h > 280:
             pdf.add_page()
             cabecalho_sep()
         x0, y0 = pdf.get_x(), pdf.get_y()
         pdf.cell(larguras[0], h, str(r["SKU"]), border=1)
-        pdf.cell(larguras[1], h, _latin(r["Produto"])[:26], border=1)
+        pdf.cell(larguras[1], h, _latin(r["Produto"])[:30], border=1)
         pdf.cell(larguras[2], h, str(r["Nº Caixa"]), border=1)
-        pdf.cell(larguras[3], h, str(r["Total Caixas"]), border=1)
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.set_fill_color(235, 235, 235)
+        pdf.cell(larguras[3], h, str(r["Total Caixas"]), border=1, align="C", fill=True)
+        pdf.set_font("Helvetica", size=8)
         pdf.cell(larguras[4], h, str(r["Total Peças"]), border=1)
         xd = pdf.get_x()
         pdf.rect(xd, y0, larguras[5], h)
@@ -1099,7 +1109,7 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
 
     # ---- Pallets (idênticos agrupados) ----
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, "Montagem dos Pallets (fileiras numeradas da base para o topo)", border="B")
+    pdf.cell(0, 7, "Montagem dos Pallets", border="B")
     pdf.ln(10)
 
     for gr in agrupar_pallets_identicos(df_pallets, agrupar):
@@ -1107,8 +1117,6 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
         tipo_limpo = _latin(_tipo_limpo(str(df_p["Tipo"].iloc[0])))
         cx_pallet = int(df_p["Qtd Caixas"].sum())
         pc_pallet = int(df_p["Total Peças"].sum())
-        posicoes = posicao_por_sku(montar_camadas(df_p))
-
         altura_bloco = 20 + (len(df_p) + 1) * 6
         if pdf.get_y() + altura_bloco > 275:
             pdf.add_page()
@@ -1119,29 +1127,31 @@ def gerar_pdf(df_pallets, cliente, data_str, agrupar=True):
         pdf.set_font("Helvetica", "B", 10)
         pdf.cell(0, 7, titulo, border="B")
         pdf.ln(8)
-        pdf.set_font("Helvetica", "", 9)
-        resumo = f"Cada pallet: {cx_pallet} cx ({pc_pallet} peças)"
+        pdf.set_font("Helvetica", "B", 12)
+        destaque = f"TOTAL: {cx_pallet} caixas"
         if gr["n"] > 1:
-            resumo += f"   |   Total do grupo: {cx_pallet * gr['n']} cx ({pc_pallet * gr['n']} peças)"
-        pdf.cell(0, 5, resumo)
-        pdf.ln(7)
+            destaque = f"CADA PALLET: {cx_pallet} caixas   |   GRUPO: {cx_pallet * gr['n']} caixas"
+        pdf.cell(0, 7, destaque)
+        pdf.ln(8)
 
+        larg = [24, 62, 18, 22, 24, 20, 20]
         pdf.set_font("Helvetica", "B", 8)
-        for w, t in zip([20, 46, 13, 15, 18, 13, 12, 53],
-                        ["SKU", "Produto", "N. Caixa", "Qtd Cx", "Qtd Peças", "Cx/Fil.", "Fil.", "Posição (base-topo)"]):
-            pdf.cell(w, 6, t, border=1)
+        pdf.set_fill_color(235, 235, 235)
+        for w, t in zip(larg, ["SKU", "Produto", "N. Caixa", "Qtd Cx", "Qtd Peças", "Cx/Fil.", "Fil."]):
+            pdf.cell(w, 6, t, border=1, fill=True)
         pdf.ln()
 
-        pdf.set_font("Helvetica", size=8)
         for _, row in df_p.iterrows():
-            pdf.cell(20, 6, str(row["SKU"]), border=1)
-            pdf.cell(46, 6, _latin(row["Produto"])[:26], border=1)
-            pdf.cell(13, 6, str(row["Nº Caixa"]), border=1)
-            pdf.cell(15, 6, str(row["Qtd Caixas"]), border=1)
-            pdf.cell(18, 6, str(row["Total Peças"]), border=1)
-            pdf.cell(13, 6, str(row["Caixas_Por_Fileira"]), border=1)
-            pdf.cell(12, 6, str(row["Quantidade_Fileiras"]), border=1)
-            pdf.cell(53, 6, _latin(posicoes.get(row["SKU"], ""))[:34], border=1)
+            pdf.set_font("Helvetica", size=8)
+            pdf.cell(larg[0], 6, str(row["SKU"]), border=1)
+            pdf.cell(larg[1], 6, _latin(row["Produto"])[:34], border=1)
+            pdf.cell(larg[2], 6, str(row["Nº Caixa"]), border=1)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(larg[3], 6, str(row["Qtd Caixas"]), border=1, align="C")
+            pdf.set_font("Helvetica", size=8)
+            pdf.cell(larg[4], 6, str(row["Total Peças"]), border=1)
+            pdf.cell(larg[5], 6, str(row["Caixas_Por_Fileira"]), border=1)
+            pdf.cell(larg[6], 6, str(row["Quantidade_Fileiras"]), border=1)
             pdf.ln()
 
         pdf.ln(5)
