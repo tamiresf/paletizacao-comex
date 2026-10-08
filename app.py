@@ -13,6 +13,34 @@ except ImportError:
 
 st.set_page_config(page_title="Sistema de Paletização - COMEX", page_icon="📦", layout="wide")
 
+# Estilização CSS para destaque dos totais no final de cada pallet
+st.markdown(
+    """
+    <style>
+    .total-box-container {
+        display: flex;
+        justify-content: flex-end;
+        gap: 15px;
+        margin-top: 15px;
+        margin-bottom: 10px;
+    }
+    .total-card {
+        background-color: #E6F0FA;
+        border: 1px solid #0055B8;
+        border-radius: 6px;
+        padding: 8px 16px;
+        color: #0055B8;
+        font-size: 1.05em;
+    }
+    .total-card b {
+        font-size: 1.15em;
+        color: #003366;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # --- CARREGAMENTO DA BASE MESTRE ---
 CAMINHOS_BASE = ["COMEX.xlsx", "data/COMEX.xlsx"]
 CAMINHO_EXCEL = next((c for c in CAMINHOS_BASE if os.path.exists(c)), None)
@@ -31,27 +59,27 @@ def carregar_base_mestre(caminho):
     df["QUANTIDADE DE CAIXAS POR FILEIRA"] = pd.to_numeric(df["QUANTIDADE DE CAIXAS POR FILEIRA"], errors="coerce").fillna(1).astype(int)
     df["ALTURA"] = pd.to_numeric(df["ALTURA"], errors="coerce").fillna(1).astype(int)
     
-    # Agrupamento interno por Família (usado estritamente no algoritmo para evitar idas e vindas no estoque)
+    # Agrupamento interno por Família
     df["FAMILIA"] = df["SKU"].apply(lambda x: ".".join(x.split(".")[:2]) if "." in x else str(x)[:4])
     return df
 
 if not CAMINHO_EXCEL:
-    st.error("⚠️ Arquivo 'COMEX.xlsx' não encontrado no diretório do aplicativo.")
+    st.error("⚠️ Ficheiro 'COMEX.xlsx' não encontrado no diretório da aplicação.")
     st.stop()
 
 df_mestre = carregar_base_mestre(CAMINHO_EXCEL)
 
 # --- INTERFACE DE ENTRADA DO PEDIDO ---
 st.title("📦 Otimizador de Paletização para Exportação")
-st.markdown("Preencha os itens manualmente ou faça o upload da planilha de pedido enviada pelo COMEX.")
+st.markdown("Preencha os itens manualmente ou faça o carregamento da folha de cálculo enviada pelo COMEX.")
 
-tab_upload, tab_manual = st.tabs(["📁 Importar Planilha de Pedido", "✍️ Inserção Manual"])
+tab_upload, tab_manual = st.tabs(["📁 Importar Folha de Cálculo", "✍️ Inserção Manual"])
 
 if "carrinho" not in st.session_state:
     st.session_state.carrinho = []
 
 with tab_upload:
-    arquivo_pedido = st.file_uploader("Selecione a planilha do pedido (.xlsx ou .csv):", type=["xlsx", "xls", "csv"])
+    arquivo_pedido = st.file_uploader("Selecione o ficheiro do pedido (.xlsx ou .csv):", type=["xlsx", "xls", "csv"])
     if arquivo_pedido is not None:
         try:
             if arquivo_pedido.name.endswith(".csv"):
@@ -83,18 +111,18 @@ with tab_upload:
                                 "Altura": int(info["ALTURA"]),
                                 "Capacidade_Pallet": int(info["QUANTIDADE DE CAIXAS NO PALLET"]),
                             })
-                if st.button("📥 Carregar Itens da Planilha para o Pedido"):
+                if st.button("📥 Carregar Itens para o Pedido"):
                     st.session_state.carrinho = itens_importados
                     st.success(f"{len(itens_importados)} SKUs carregados com sucesso!")
             else:
-                st.warning("A planilha deve conter ao menos as colunas 'SKU' e 'QUANTIDADE'.")
+                st.warning("A folha de cálculo deve conter pelo menos as colunas 'SKU' e 'QUANTIDADE'.")
         except Exception as e:
-            st.error(f"Erro ao processar o arquivo: {e}")
+            st.error(f"Erro ao processar o ficheiro: {e}")
 
 with tab_manual:
     col_sel, col_qtd = st.columns([3, 1])
     opcoes = df_mestre["SKU"] + " - " + df_mestre["NOME DO PRODUTO"]
-    prod_sel = col_sel.selectbox("Pesquisar SKU / Produto:", options=opcoes)
+    prod_sel = col_sel.selectbox("Pesquisar SKU / Artigo:", options=opcoes)
     sku_man = prod_sel.split(" - ")[0]
     info_man = df_mestre[df_mestre["SKU"] == sku_man].iloc[0]
     qtd_man = col_qtd.number_input("Qtd Caixas:", min_value=1, value=int(info_man["QUANTIDADE DE CAIXAS NO PALLET"]), step=1)
@@ -118,7 +146,7 @@ with tab_manual:
                 "Altura": int(info_man["ALTURA"]),
                 "Capacidade_Pallet": int(info_man["QUANTIDADE DE CAIXAS NO PALLET"]),
             })
-        st.success("Item adicionado!")
+        st.success("Artigo adicionado!")
 
 # --- RESUMO DO PEDIDO ---
 st.markdown("---")
@@ -137,14 +165,12 @@ if st.session_state.carrinho:
 # --- MOTOR DE REGRAS DE PALETIZAÇÃO ---
 def otimizar_paletizacao(itens_pedido):
     pallets = []
-    
-    # 1. Agrupamento por Família de Produto internamente
     itens = sorted(itens_pedido, key=lambda x: (x["Familia"], x["Nº Caixa"], x["SKU"]))
     
     pool_fileiras = []
     caixas_soltas = []
     
-    # 2. Pallets Fechados de SKU Único
+    # 1. Pallets Fechados de SKU Único
     for it in itens:
         cap = it["Capacidade_Pallet"]
         cpf = it["Caixas_Por_Fileira"]
@@ -182,7 +208,7 @@ def otimizar_paletizacao(itens_pedido):
                 "qtd": resto
             })
             
-    # 3. Consolidação de Caixas Soltas em Fileiras Mistas do Mesmo Tipo de Caixa
+    # 2. Consolidação de Caixas Soltas em Fileiras Mistas
     soltas_agrupadas = {}
     for cs in caixas_soltas:
         t = cs["tipo_cx"]
@@ -223,7 +249,7 @@ def otimizar_paletizacao(itens_pedido):
                 if ref:
                     ref["qtd"] = q
                 
-    # 4. Pallets de Sobras com Fileiras Completas (Mesmo Tipo de Caixa)
+    # 3. Pallets de Sobras com Fileiras Completas (Mesmo Tipo de Caixa)
     tipos_presentes = sorted(set(f["tipo_cx"] for f in pool_fileiras), reverse=True)
     
     for t in tipos_presentes:
@@ -231,7 +257,6 @@ def otimizar_paletizacao(itens_pedido):
         if not fils_t:
             continue
             
-        # A: Mesma altura
         alturas = sorted(set(f["h_max"] for f in fils_t), reverse=True)
         for h in alturas:
             iguais = [f for f in fils_t if f["h_max"] == h]
@@ -248,7 +273,6 @@ def otimizar_paletizacao(itens_pedido):
                 })
                 iguais = [f for f in fils_t if f["h_max"] == h]
                 
-        # B: Mesma caixa, alturas diferentes (Proteção contra sequência vazia)
         while fils_t:
             alturas_disponiveis = [f["h_max"] for f in fils_t]
             lim_h = min(alturas_disponiveis)
@@ -266,7 +290,7 @@ def otimizar_paletizacao(itens_pedido):
             else:
                 break
 
-    # 5. Combinação de Diferentes Tipos de Caixa (Pallets Mistos)
+    # 4. Combinação de Diferentes Tipos de Caixa
     while len(pool_fileiras) >= 4:
         alturas_candidatas = [f["h_max"] for f in pool_fileiras[:4]]
         h_lim = min(alturas_candidatas)
@@ -284,7 +308,7 @@ def otimizar_paletizacao(itens_pedido):
         else:
             break
 
-    # 6. Fechamento do Pallet Final (Regras 4, 5 e 6)
+    # 5. Fechamento do Pallet Final
     soltas_finais = [cs for cs in caixas_soltas if cs.get("qtd", 0) > 0]
     
     if pool_fileiras or soltas_finais:
@@ -296,7 +320,6 @@ def otimizar_paletizacao(itens_pedido):
             itens_inc = {cs["sku"]: cs["qtd"] for cs in soltas_finais}
             camadas_final.append({"tipo_cx": soltas_finais[0]["tipo_cx"], "itens": itens_inc, "completa": False})
             
-        # Regra 4: Mínimo de 2 fileiras no último pallet
         if len(camadas_final) < 2 and pallets:
             doador = pallets[-1]
             if len(doador.get("camadas", [])) > 2:
@@ -322,6 +345,9 @@ def gerar_dataframe_operador(pallets, itens_pedido):
         for pos, c in enumerate(p["camadas"], 1):
             for sku, qtd in c["itens"].items():
                 info = mapa_itens.get(sku, {})
+                pecas_cx = info.get("Pecas_Por_Caixa", 1)
+                total_pecas_linha = qtd * pecas_cx
+                
                 linhas.append({
                     "Pallet": f"Pallet {idx}",
                     "Tipo Pallet": p["tipo"],
@@ -330,6 +356,8 @@ def gerar_dataframe_operador(pallets, itens_pedido):
                     "Produto": info.get("Produto", "Desconhecido"),
                     "Caixa Nº": info.get("Nº Caixa", "-"),
                     "Qtd Caixas": qtd,
+                    "Peças / Caixa": pecas_cx,
+                    "Total Peças": total_pecas_linha,
                     "Cx / Fileira": info.get("Caixas_Por_Fileira", "-"),
                     "Status Fileira": "Completa" if c["completa"] else "Incompleta (Topo)",
                     "Observação": p["obs"]
@@ -338,20 +366,45 @@ def gerar_dataframe_operador(pallets, itens_pedido):
 
 if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
     if not st.session_state.carrinho:
-        st.warning("Adicione produtos ou importe uma planilha para processar.")
+        st.warning("Adicione produtos ou importe uma folha de cálculo para processar.")
     else:
         resultado_pallets = otimizar_paletizacao(st.session_state.carrinho)
         df_operador = gerar_dataframe_operador(resultado_pallets, st.session_state.carrinho)
         
         st.subheader("📋 Resumo da Carga Paletizada")
-        st.success(f"Carga otimizada em **{len(resultado_pallets)} pallets**.")
+        total_cx_global = df_operador["Qtd Caixas"].sum()
+        total_pc_global = df_operador["Total Peças"].sum()
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("📦 Total de Pallets", f"{len(resultado_pallets)}")
+        c2.metric("📦 Total Geral de Caixas", f"{total_cx_global:,} cx".replace(",", "."))
+        c3.metric("🧩 Total Geral de Peças", f"{total_pc_global:,} pçs".replace(",", "."))
+        st.markdown("---")
         
         for num_p in df_operador["Pallet"].unique():
             df_p = df_operador[df_operador["Pallet"] == num_p]
-            with st.expander(f"📦 {num_p} - {df_p['Tipo Pallet'].iloc[0]} ({df_p['Qtd Caixas'].sum()} Caixas)", expanded=True):
+            total_cx_pallet = int(df_p["Qtd Caixas"].sum())
+            total_pc_pallet = int(df_p["Total Peças"].sum())
+            
+            with st.expander(f"📦 {num_p} - {df_p['Tipo Pallet'].iloc[0]}", expanded=True):
                 st.caption(f"Orientação: {df_p['Observação'].iloc[0]}")
                 st.dataframe(
-                    df_p[["Fileira", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Cx / Fileira", "Status Fileira"]],
+                    df_p[["Fileira", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Peças / Caixa", "Total Peças", "Cx / Fileira", "Status Fileira"]],
                     use_container_width=True,
                     hide_index=True
+                )
+                
+                # Totais exibidos no final de cada pallet
+                st.markdown(
+                    f"""
+                    <div class="total-box-container">
+                        <div class="total-card">
+                            📦 Total de Caixas no {num_p}: <b>{total_cx_pallet} cx</b>
+                        </div>
+                        <div class="total-card">
+                            🧩 Total de Peças no {num_p}: <b>{total_pc_pallet} pçs</b>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
