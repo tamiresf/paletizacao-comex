@@ -363,6 +363,7 @@ def gerar_dataframe_operador(pallets, itens_pedido):
                     "Produto": info.get("Produto", "Desconhecido"),
                     "Caixa Nº": info.get("Nº Caixa", "-"),
                     "Qtd Caixas": qtd,
+                    "Altura": info.get("Altura", "-"),  # Altura individual de cada SKU
                     "Total Peças": total_pecas_linha,
                     "Cx / Fileira": info.get("Caixas_Por_Fileira", "-"),
                     "Status Fileira": "Completa" if c["completa"] else "Incompleta (Topo)",
@@ -388,7 +389,7 @@ def gerar_excel_modelo(df_operador):
     borda_padrao = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
     borda_cabecalho = Border(left=thin_side, right=thin_side, top=thin_side, bottom=double_side)
     
-    headers = ["Pallet", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Fileira", "Status"]
+    headers = ["Pallet", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Altura", "Fileira", "Status"]
     ws.row_dimensions[1].height = 28
     
     for col_idx, header in enumerate(headers, 1):
@@ -399,7 +400,7 @@ def gerar_excel_modelo(df_operador):
         c.border = borda_cabecalho
 
     df_agrupado = (
-        df_operador.groupby(["Pallet_Num", "SKU", "Produto", "Caixa Nº", "Status Fileira"], as_index=False)
+        df_operador.groupby(["Pallet_Num", "SKU", "Produto", "Caixa Nº", "Altura", "Status Fileira"], as_index=False)
         .agg(
             Qtd_Caixas=("Qtd Caixas", "sum"),
             Fileiras=("Fileira", lambda f: ", ".join(f))
@@ -424,16 +425,17 @@ def gerar_excel_modelo(df_operador):
             ws.cell(row=linha_atual, column=3, value=str(row["Produto"]))
             ws.cell(row=linha_atual, column=4, value=int(row["Caixa Nº"]))
             ws.cell(row=linha_atual, column=5, value=int(row["Qtd_Caixas"]))
-            ws.cell(row=linha_atual, column=6, value=str(row["Fileiras"]))
-            ws.cell(row=linha_atual, column=7, value=str(row["Status Fileira"]))
+            ws.cell(row=linha_atual, column=6, value=int(row["Altura"]) if str(row["Altura"]).isdigit() else str(row["Altura"]))
+            ws.cell(row=linha_atual, column=7, value=str(row["Fileiras"]))
+            ws.cell(row=linha_atual, column=8, value=str(row["Status Fileira"]))
             
-            for col_i in range(1, 8):
+            for col_i in range(1, 9):
                 cell_item = ws.cell(row=linha_atual, column=col_i)
                 cell_item.fill = fill_pallet
                 cell_item.border = borda_padrao
                 cell_item.font = Font(name="Calibri", size=10)
                 
-                if col_i in [1, 2, 4, 5, 7]:
+                if col_i in [1, 2, 4, 5, 6, 8]:
                     cell_item.alignment = Alignment(horizontal="center", vertical="center")
                 else:
                     cell_item.alignment = Alignment(horizontal="left", vertical="center")
@@ -501,11 +503,11 @@ def gerar_pdf_operacional(df_operador, nome_cliente_str):
             pdf.add_page()
             
         pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 6, f"Pallet {num_p} - Altura: {alt_pallet} fileiras - {_latin(df_p['Tipo Pallet'].iloc[0])}", border="B")
+        pdf.cell(0, 6, f"Pallet {num_p} - Altura do Pallet: {alt_pallet} fileiras - {_latin(df_p['Tipo Pallet'].iloc[0])}", border="B")
         pdf.ln(7)
         
-        larguras = [24, 28, 70, 15, 20, 32]
-        titulos = ["Fileira", "SKU", "Produto", "N. Cx", "Qtd Cx", "Status"]
+        larguras = [22, 26, 60, 14, 18, 16, 30]
+        titulos = ["Fileira", "SKU", "Produto", "N. Cx", "Qtd Cx", "Altura", "Status"]
         
         pdf.set_font("Helvetica", "B", 8)
         pdf.set_fill_color(230, 230, 230)
@@ -517,10 +519,11 @@ def gerar_pdf_operacional(df_operador, nome_cliente_str):
         for _, r in df_p.iterrows():
             pdf.cell(larguras[0], 6, _latin(r["Fileira"]), border=1, align="C")
             pdf.cell(larguras[1], 6, str(r["SKU"]), border=1, align="C")
-            pdf.cell(larguras[2], 6, _latin(r["Produto"])[:45], border=1)
+            pdf.cell(larguras[2], 6, _latin(r["Produto"])[:40], border=1)
             pdf.cell(larguras[3], 6, str(r["Caixa Nº"]), border=1, align="C")
             pdf.cell(larguras[4], 6, str(r["Qtd Caixas"]), border=1, align="C")
-            pdf.cell(larguras[5], 6, _latin(r["Status Fileira"]), border=1, align="C")
+            pdf.cell(larguras[5], 6, str(r["Altura"]), border=1, align="C")
+            pdf.cell(larguras[6], 6, _latin(r["Status Fileira"]), border=1, align="C")
             pdf.ln()
             
         pdf.set_font("Helvetica", "B", 9)
@@ -576,7 +579,7 @@ if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
         
         st.markdown("---")
         
-        # Exibição individual dos Pallets com a Altura em destaque
+        # Exibição individual dos Pallets com a coluna Altura linha a linha
         for num_p in sorted(df_operador["Pallet_Num"].unique()):
             df_p = df_operador[df_operador["Pallet_Num"] == num_p]
             total_cx_pallet = int(df_p["Qtd Caixas"].sum())
@@ -585,12 +588,11 @@ if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
             with st.expander(f"📦 {num_p} - {df_p['Tipo Pallet'].iloc[0]}  |  📐 Altura: {altura_pallet} fileiras", expanded=True):
                 st.caption(f"Orientação: {df_p['Observação'].iloc[0]}")
                 st.dataframe(
-                    df_p[["Fileira", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Cx / Fileira", "Status Fileira"]],
+                    df_p[["Fileira", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Altura", "Cx / Fileira", "Status Fileira"]],
                     use_container_width=True,
                     hide_index=True
                 )
                 
-                # Cards de rodapé com Altura e Quantidade de Caixas
                 st.markdown(
                     f"""
                     <div class="total-box-container">
