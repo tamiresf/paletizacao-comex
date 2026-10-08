@@ -20,7 +20,6 @@ st.markdown(
     .total-box-container {
         display: flex;
         justify-content: flex-end;
-        gap: 15px;
         margin-top: 15px;
         margin-bottom: 10px;
     }
@@ -28,12 +27,12 @@ st.markdown(
         background-color: #E6F0FA;
         border: 1px solid #0055B8;
         border-radius: 6px;
-        padding: 8px 16px;
+        padding: 8px 18px;
         color: #0055B8;
-        font-size: 1.05em;
+        font-size: 1.1em;
     }
     .total-card b {
-        font-size: 1.15em;
+        font-size: 1.2em;
         color: #003366;
     }
     </style>
@@ -59,7 +58,7 @@ def carregar_base_mestre(caminho):
     df["QUANTIDADE DE CAIXAS POR FILEIRA"] = pd.to_numeric(df["QUANTIDADE DE CAIXAS POR FILEIRA"], errors="coerce").fillna(1).astype(int)
     df["ALTURA"] = pd.to_numeric(df["ALTURA"], errors="coerce").fillna(1).astype(int)
     
-    # Agrupamento interno por Família
+    # Agrupamento interno por Família (usado pelo motor de rota)
     df["FAMILIA"] = df["SKU"].apply(lambda x: ".".join(x.split(".")[:2]) if "." in x else str(x)[:4])
     return df
 
@@ -345,9 +344,6 @@ def gerar_dataframe_operador(pallets, itens_pedido):
         for pos, c in enumerate(p["camadas"], 1):
             for sku, qtd in c["itens"].items():
                 info = mapa_itens.get(sku, {})
-                pecas_cx = info.get("Pecas_Por_Caixa", 1)
-                total_pecas_linha = qtd * pecas_cx
-                
                 linhas.append({
                     "Pallet": f"Pallet {idx}",
                     "Tipo Pallet": p["tipo"],
@@ -356,8 +352,6 @@ def gerar_dataframe_operador(pallets, itens_pedido):
                     "Produto": info.get("Produto", "Desconhecido"),
                     "Caixa Nº": info.get("Nº Caixa", "-"),
                     "Qtd Caixas": qtd,
-                    "Peças / Caixa": pecas_cx,
-                    "Total Peças": total_pecas_linha,
                     "Cx / Fileira": info.get("Caixas_Por_Fileira", "-"),
                     "Status Fileira": "Completa" if c["completa"] else "Incompleta (Topo)",
                     "Observação": p["obs"]
@@ -373,36 +367,30 @@ if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
         
         st.subheader("📋 Resumo da Carga Paletizada")
         total_cx_global = df_operador["Qtd Caixas"].sum()
-        total_pc_global = df_operador["Total Peças"].sum()
         
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
         c1.metric("📦 Total de Pallets", f"{len(resultado_pallets)}")
         c2.metric("📦 Total Geral de Caixas", f"{total_cx_global:,} cx".replace(",", "."))
-        c3.metric("🧩 Total Geral de Peças", f"{total_pc_global:,} pçs".replace(",", "."))
         st.markdown("---")
         
         for num_p in df_operador["Pallet"].unique():
             df_p = df_operador[df_operador["Pallet"] == num_p]
             total_cx_pallet = int(df_p["Qtd Caixas"].sum())
-            total_pc_pallet = int(df_p["Total Peças"].sum())
             
             with st.expander(f"📦 {num_p} - {df_p['Tipo Pallet'].iloc[0]}", expanded=True):
                 st.caption(f"Orientação: {df_p['Observação'].iloc[0]}")
                 st.dataframe(
-                    df_p[["Fileira", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Peças / Caixa", "Total Peças", "Cx / Fileira", "Status Fileira"]],
+                    df_p[["Fileira", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Cx / Fileira", "Status Fileira"]],
                     use_container_width=True,
                     hide_index=True
                 )
                 
-                # Totais exibidos no final de cada pallet
+                # Apenas a Quantidade Total de Caixas no final do Pallet
                 st.markdown(
                     f"""
                     <div class="total-box-container">
                         <div class="total-card">
                             📦 Total de Caixas no {num_p}: <b>{total_cx_pallet} cx</b>
-                        </div>
-                        <div class="total-card">
-                            🧩 Total de Peças no {num_p}: <b>{total_pc_pallet} pçs</b>
                         </div>
                     </div>
                     """,
