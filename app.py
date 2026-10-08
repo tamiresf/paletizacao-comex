@@ -1,7 +1,11 @@
+import io
+import math
 import os
 import re
-import math
 from datetime import datetime
+import openpyxl
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 import pandas as pd
 import streamlit as st
 
@@ -13,7 +17,7 @@ except ImportError:
 
 st.set_page_config(page_title="Sistema de Paletização - COMEX", page_icon="📦", layout="wide")
 
-# Estilização CSS para destaque dos totais no final de cada pallet
+# Estilização CSS
 st.markdown(
     """
     <style>
@@ -58,7 +62,7 @@ def carregar_base_mestre(caminho):
     df["QUANTIDADE DE CAIXAS POR FILEIRA"] = pd.to_numeric(df["QUANTIDADE DE CAIXAS POR FILEIRA"], errors="coerce").fillna(1).astype(int)
     df["ALTURA"] = pd.to_numeric(df["ALTURA"], errors="coerce").fillna(1).astype(int)
     
-    # Agrupamento interno por Família (usado pelo motor de rota)
+    # Agrupamento interno por Família
     df["FAMILIA"] = df["SKU"].apply(lambda x: ".".join(x.split(".")[:2]) if "." in x else str(x)[:4])
     return df
 
@@ -345,6 +349,7 @@ def gerar_dataframe_operador(pallets, itens_pedido):
             for sku, qtd in c["itens"].items():
                 info = mapa_itens.get(sku, {})
                 linhas.append({
+                    "Pallet_Num": idx,
                     "Pallet": f"Pallet {idx}",
                     "Tipo Pallet": p["tipo"],
                     "Fileira": f"{pos}ª fileira",
@@ -358,6 +363,177 @@ def gerar_dataframe_operador(pallets, itens_pedido):
                 })
     return pd.DataFrame(linhas)
 
+# --- GERADOR DO EXCEL NO FORMATO DO MODELO ---
+def gerar_excel_modelo(df_operador):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Paletização"
+    
+    # Cores de fundo por pallet alternadas
+    PALETA_CORES = [
+        "E2EFDA",  # Verde pastel
+        "D9E1F2",  # Azul pastel
+        "FCE4D6",  # Salmão/Pêssego pastel
+        "FFF2CC",  # Amarelo pastel
+        "EDEDED",  # Cinza suave
+        "DDEBF7",  # Ciano suave
+        "EAE8FE",  # Lavanda suave
+    ]
+    
+    fill_cabecalho = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid") # Amarelo vibrante
+    font_cabecalho = Font(name="Calibri", size=11, bold=True, color="000000")
+    
+    thin_side = Side(border_style="thin", color="000000")
+    double_side = Side(border_style="double", color="000000")
+    borda_padrao = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    borda_cabecalho = Border(left=thin_side, right=thin_side, top=thin_side, bottom=double_side)
+    
+    headers = ["Pallet", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Fileira", "Status"]
+    ws.row_dimensions[1].height = 28
+    
+    for col_idx, header in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col_idx, value=header)
+        c.fill = fill_cabecalho
+        c.font = font_cabecalho
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = borda_cabecalho
+
+    # Consolidação por Pallet e SKU
+    df_agrupado = (
+        df_operador.groupby(["Pallet_Num", "SKU", "Produto", "Caixa Nº", "Status Fileira"], as_index=False)
+        .agg(
+            Qtd_Caixas=("Qtd Caixas", "sum"),
+            Fileiras=("Fileira", lambda f: ", ".join(f))
+        )
+        .sort_values(by=["Pallet_Num", "Caixa Nº", "SKU"])
+    )
+
+    linha_atual = 2
+    for idx_pal, (pal_num, grupo) in enumerate(df_agrupado.groupby("Pallet_Num", sort=False)):
+        cor_hex = PALETA_CORES[idx_pal % len(PALETA_CORES)]
+        fill_pallet = PatternFill(start_color=cor_hex, end_color=cor_hex, fill_type="solid")
+        
+        inicio_linha = linha_atual
+        qtd_skus = len(grupo)
+        fim_linha = linha_atual + qtd_skus - 1
+        
+        for _, row in grupo.iterrows():
+            ws.row_dimensions[linha_atual].height = 20
+            
+            c_pal = ws.cell(row=linha_atual, column=1, value=int(pal_num))
+            c_sku = ws.cell(row=linha_atual, column=2, value=str(row["SKU"]))
+            c_prod = ws.cell(row=linha_atual, column=3, value=str(row["Produto"]))
+            c_cx = ws.cell(row=linha_atual, column=4, value=int(row["Caixa Nº"]))
+            c_qtd = ws.cell(row=linha_atual, column=5, value=int(row["Qtd_Caixas"]))
+            c_fil = ws.cell(row=linha_atual, column=6, value=str(row["Fileiras"]))
+            c_st = ws.cell(row=linha_atual, column=7, value=str(row["Status Fileira"]))
+            
+            for col_i in range(1, 8):
+                cell_item = ws.cell(row=linha_atual, column=col_i)
+                cell_item.fill = fill_pallet
+                cell_item.border = borda_padrao
+                cell_item.font = Font(name="Calibri", size=10)
+                
+                if col_i in [1, 2, 4, 5, 7]:
+                    cell_item.alignment = Alignment(horizontal="center", vertical="center")
+                else:
+                    cell_item.alignment = Alignment(horizontal="left", vertical="center")
+                    
+            linha_atual += 1
+            
+        # Mesclagem da coluna Pallet quando há múltiplos SKUs no mesmo pallet
+        if qtd_skus > 1:
+            ws.merge_cells(start_row=inicio_linha, start_column=1, end_row=fim_linha, end_column=1)
+            cell_mesclada = ws.cell(row=inicio_linha, column=1)
+            cell_mesclada.alignment = Alignment(horizontal="center", vertical="center")
+            cell_mesclada.font = Font(name="Calibri", size=11, bold=True)
+        else:
+            ws.cell(row=inicio_linha, column=1).font = Font(name="Calibri", size=10, bold=True)
+
+    # Ajuste automático da largura das colunas
+    for col in ws.columns:
+        col_letter = get_column_letter(col[0].column)
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+        
+    ws.column_dimensions["A"].width = 10
+    ws.column_dimensions["B"].width = 18
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+# --- GERADOR DE PDF OPERACIONAL ---
+def _latin(txt):
+    return str(txt).encode("latin-1", "replace").decode("latin-1")
+
+def gerar_pdf_operacional(df_operador, nome_cliente_str):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=False)
+    pdf.add_page()
+    
+    # Cabeçalho
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 8, "MUSTAD - Relatorio de Paletizacao", align="C")
+    pdf.ln(7)
+    
+    cli = nome_cliente_str.strip() if nome_cliente_str else "Nao Informado"
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 5, f"Cliente: {_latin(cli)}", align="C")
+    pdf.ln(5)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.cell(0, 5, f"Emissao: {datetime.now().strftime('%d/%m/%Y %H:%M')}", align="C")
+    pdf.ln(6)
+    
+    total_pallets = df_operador["Pallet_Num"].nunique()
+    total_cx = df_operador["Qtd Caixas"].sum()
+    
+    pdf.set_fill_color(0, 85, 184)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 9, f"CARGA TOTAL: {total_pallets} PALLETS | {total_cx} CAIXAS", align="C", fill=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(12)
+    
+    # Tabela de cada Pallet
+    for num_p in sorted(df_operador["Pallet_Num"].unique()):
+        df_p = df_operador[df_operador["Pallet_Num"] == num_p]
+        cx_pallet = int(df_p["Qtd Caixas"].sum())
+        
+        # Quebra de página automática preventiva
+        if pdf.get_y() + (len(df_p) * 6) + 30 > 280:
+            pdf.add_page()
+            
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(0, 6, f"Pallet {num_p} - {_latin(df_p['Tipo Pallet'].iloc[0])}", border="B")
+        pdf.ln(7)
+        
+        larguras = [24, 28, 70, 15, 20, 32]
+        titulos = ["Fileira", "SKU", "Produto", "N. Cx", "Qtd Cx", "Status"]
+        
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_fill_color(230, 230, 230)
+        for w, t in zip(larguras, titulos):
+            pdf.cell(w, 6, t, border=1, fill=True, align="C")
+        pdf.ln()
+        
+        pdf.set_font("Helvetica", "", 8)
+        for _, r in df_p.iterrows():
+            pdf.cell(larguras[0], 6, _latin(r["Fileira"]), border=1, align="C")
+            pdf.cell(larguras[1], 6, str(r["SKU"]), border=1, align="C")
+            pdf.cell(larguras[2], 6, _latin(r["Produto"])[:45], border=1)
+            pdf.cell(larguras[3], 6, str(r["Caixa Nº"]), border=1, align="C")
+            pdf.cell(larguras[4], 6, str(r["Qtd Caixas"]), border=1, align="C")
+            pdf.cell(larguras[5], 6, _latin(r["Status Fileira"]), border=1, align="C")
+            pdf.ln()
+            
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.cell(0, 6, f"Total de Caixas no Pallet {num_p}: {cx_pallet} cx", align="R")
+        pdf.ln(8)
+        
+    return bytes(pdf.output())
+
+# --- EXECUÇÃO E EXIBIÇÃO ---
 if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
     if not st.session_state.carrinho:
         st.warning("Adicione produtos ou importe uma folha de cálculo para processar.")
@@ -373,11 +549,40 @@ if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
         c2.metric("📦 Total Geral de Caixas", f"{total_cx_global:,} cx".replace(",", "."))
         st.markdown("---")
         
-        for num_p in df_operador["Pallet"].unique():
-            df_p = df_operador[df_operador["Pallet"] == num_p]
+        # Botões de Download (Excel e PDF)
+        col_btn1, col_btn2 = st.columns(2)
+        cliente_limpo = re.sub(r'[\\/*?:"<>|]', "", nome_cliente.strip()) or "PEDIDO"
+        data_str = datetime.now().strftime("%d-%m-%Y")
+        
+        with col_btn1:
+            bytes_excel = gerar_excel_modelo(df_operador)
+            st.download_button(
+                label="📊 Baixar Paletização em Excel (.xlsx)",
+                data=bytes_excel,
+                file_name=f"PALETIZACAO_{cliente_limpo}_{data_str}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            
+        with col_btn2:
+            if FPDF_DISPONIVEL:
+                bytes_pdf = gerar_pdf_operacional(df_operador, nome_cliente)
+                st.download_button(
+                    label="📄 Baixar Relatório em PDF (.pdf)",
+                    data=bytes_pdf,
+                    file_name=f"PALETIZACAO_{cliente_limpo}_{data_str}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+        
+        st.markdown("---")
+        
+        # Exibição individual dos Pallets
+        for num_p in sorted(df_operador["Pallet_Num"].unique()):
+            df_p = df_operador[df_operador["Pallet_Num"] == num_p]
             total_cx_pallet = int(df_p["Qtd Caixas"].sum())
             
-            with st.expander(f"📦 {num_p} - {df_p['Tipo Pallet'].iloc[0]}", expanded=True):
+            with st.expander(f"📦 Pallet {num_p} - {df_p['Tipo Pallet'].iloc[0]}", expanded=True):
                 st.caption(f"Orientação: {df_p['Observação'].iloc[0]}")
                 st.dataframe(
                     df_p[["Fileira", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Cx / Fileira", "Status Fileira"]],
@@ -385,12 +590,11 @@ if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
                     hide_index=True
                 )
                 
-                # Apenas a Quantidade Total de Caixas no final do Pallet
                 st.markdown(
                     f"""
                     <div class="total-box-container">
                         <div class="total-card">
-                            📦 Total de Caixas no {num_p}: <b>{total_cx_pallet} cx</b>
+                            📦 Total de Caixas no Pallet {num_p}: <b>{total_cx_pallet} cx</b>
                         </div>
                     </div>
                     """,
