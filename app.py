@@ -46,7 +46,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("📦 Sistema de Paletização - COMEX (12 Pallets)")
+st.title("📦 Sistema de Paletização - COMEX")
 st.markdown("---")
 
 # --- 2. BASE DE DADOS E CARREGAMENTO ---
