@@ -2,7 +2,6 @@ import os
 import re
 import math
 from datetime import datetime
-from itertools import combinations
 import pandas as pd
 import streamlit as st
 
@@ -32,7 +31,7 @@ def carregar_base_mestre(caminho):
     df["QUANTIDADE DE CAIXAS POR FILEIRA"] = pd.to_numeric(df["QUANTIDADE DE CAIXAS POR FILEIRA"], errors="coerce").fillna(1).astype(int)
     df["ALTURA"] = pd.to_numeric(df["ALTURA"], errors="coerce").fillna(1).astype(int)
     
-    # Extração de Família para agrupamento logístico (2 primeiros blocos do SKU, ex: 11.17)
+    # Agrupamento interno por Família (usado apenas no algoritmo de rota/separação)
     df["FAMILIA"] = df["SKU"].apply(lambda x: ".".join(x.split(".")[:2]) if "." in x else x[:4])
     return df
 
@@ -61,7 +60,6 @@ with tab_upload:
                 df_ped = pd.read_excel(arquivo_pedido)
             df_ped.columns = df_ped.columns.str.strip().str.upper()
             
-            # Mapeamento dinâmico de colunas
             col_sku = next((c for c in df_ped.columns if "SKU" in c), None)
             col_qtd = next((c for c in df_ped.columns if any(k in c for k in ["QTD", "QUANTIDADE", "CAIXAS"])), None)
             
@@ -128,7 +126,11 @@ nome_cliente = st.text_input("Identificação do Pedido / Cliente:", placeholder
 
 if st.session_state.carrinho:
     df_carrinho = pd.DataFrame(st.session_state.carrinho)
-    st.dataframe(df_carrinho[["SKU", "Produto", "Familia", "Nº Caixa", "Qtd_Caixas", "Caixas_Por_Fileira", "Altura"]], use_container_width=True)
+    # Visualização limpa: SEM a coluna de família
+    st.dataframe(
+        df_carrinho[["SKU", "Produto", "Nº Caixa", "Qtd_Caixas", "Caixas_Por_Fileira", "Altura"]],
+        use_container_width=True
+    )
     if st.button("🔴 Limpar Todo o Pedido"):
         st.session_state.carrinho = []
         st.rerun()
@@ -137,11 +139,11 @@ if st.session_state.carrinho:
 def otimizar_paletizacao(itens_pedido):
     pallets = []
     
-    # Ordenação estrita por Família de Produto -> Reduz deslocamento de separação
+    # Ordenação por Família de Produto internamente para reduzir deslocamento no estoque
     itens = sorted(itens_pedido, key=lambda x: (x["Familia"], x["Nº Caixa"], x["SKU"]))
     
-    pool_fileiras = [] # Fileiras completas disponíveis
-    caixas_soltas = []  # Caixas avulsas que não formam fileira
+    pool_fileiras = []
+    caixas_soltas = []
     
     # 1. Pallets Fechados Monoproduto (100% Cheios)
     for it in itens:
@@ -161,7 +163,6 @@ def otimizar_paletizacao(itens_pedido):
                 "obs": "Pallet 100% ocupado por um único SKU."
             })
             
-        # Sobras de cada SKU são divididas em fileiras completas e caixas soltas
         fil_completas, resto = divmod(sobra_caixas, cpf)
         for _ in range(fil_completas):
             pool_fileiras.append({
@@ -190,7 +191,6 @@ def otimizar_paletizacao(itens_pedido):
         
     for t, lista_cs in soltas_agrupadas.items():
         cpf = lista_cs[0]["cpf"]
-        # Priorizar agrupar caixas com a mesma altura
         lista_cs.sort(key=lambda x: (-x["h_max"], x["familia"]))
         
         camada_temp = {}
@@ -216,7 +216,6 @@ def otimizar_paletizacao(itens_pedido):
                     camada_temp = {}
                     soma = 0
                     min_h = 6
-        # Se sobrou caixa que não fecha fileira, fica pendente para o último pallet
         if camada_temp:
             for s, q in camada_temp.items():
                 ref = next(x for x in lista_cs if x["sku"] == s)
@@ -227,7 +226,6 @@ def otimizar_paletizacao(itens_pedido):
     
     for t in tipos_presentes:
         fils_t = [f for f in pool_fileiras if f["tipo_cx"] == t]
-        # Prioridade A: Mesma altura
         alturas = sorted(set(f["h_max"] for f in fils_t), reverse=True)
         for h in alturas:
             iguais = [f for f in fils_t if f["h_max"] == h]
@@ -244,7 +242,6 @@ def otimizar_paletizacao(itens_pedido):
                 })
                 iguais = [f for f in fils_t if f["h_max"] == h]
                 
-        # Prioridade B: Mesma caixa, alturas diferentes (limite respeita a menor altura ou cota máxima)
         while len(fils_t) >= min(f["h_max"] for f in fils_t):
             lim_h = min(f["h_max"] for f in fils_t[:min(f["h_max"] for f in fils_t)])
             lote = fils_t[:lim_h]
@@ -260,11 +257,9 @@ def otimizar_paletizacao(itens_pedido):
 
     # 4. Combinação de Diferentes Tipos de Caixa (Pallets Mistos com Fileiras Completas)
     while len(pool_fileiras) >= 4:
-        # Pega a menor altura das candidatas
         h_lim = min(f["h_max"] for f in pool_fileiras[:4])
         if len(pool_fileiras) >= h_lim:
             lote = pool_fileiras[:h_lim]
-            # Ordena por tipo de caixa decrescente (caixas maiores na base)
             lote.sort(key=lambda x: -x["tipo_cx"])
             for x in lote:
                 pool_fileiras.remove(x)
@@ -280,26 +275,22 @@ def otimizar_paletizacao(itens_pedido):
     # 5. Fechamento do Pallet Final (Regras 4, 5 e 6)
     soltas_finais = [cs for cs in caixas_soltas if cs["qtd"] > 0]
     
-    # Se sobrar fileiras ou caixas soltas
     if pool_fileiras or soltas_finais:
         camadas_final = []
-        # Adiciona fileiras completas restantes
         for f in pool_fileiras:
             camadas_final.append({"tipo_cx": f["tipo_cx"], "itens": f["itens"], "completa": True})
             
-        # Adiciona fileira incompleta com as sobras soltas (APENAS NO ÚLTIMO PALLET)
         if soltas_finais:
             itens_inc = {cs["sku"]: cs["qtd"] for cs in soltas_finais}
             camadas_final.append({"tipo_cx": soltas_finais[0]["tipo_cx"], "itens": itens_inc, "completa": False})
             
         # Regra 4: Último pallet deve ter no mínimo 2 fileiras
         if len(camadas_final) < 2 and pallets:
-            # Transfere 1 fileira do pallet anterior para compor as 2 mínimas
             doador = pallets[-1]
             if len(doador["camadas"]) > 2:
                 camada_movida = doador["camadas"].pop()
                 camadas_final.insert(0, camada_movida)
-                doador["obs"] += " (1 fileira transferida para o último pallet para cumprir mínimo de 2 fileiras)."
+                doador["obs"] += " (1 fileira transferida para o último pallet para cumprir o mínimo de 2 fileiras)."
                 
         pallets.append({
             "tipo": "Último Pallet (Sobras / Fileira Incompleta)",
@@ -343,7 +334,7 @@ if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
         st.subheader("📋 Resumo da Carga Paletizada")
         st.success(f"Carga otimizada em **{len(resultado_pallets)} pallets**.")
         
-        # Exibição individual para chão de fábrica
+        # Exibição individual para os operadores (sem a coluna de família)
         for num_p in df_operador["Pallet"].unique():
             df_p = df_operador[df_operador["Pallet"] == num_p]
             with st.expander(f"📦 {num_p} - {df_p['Tipo Pallet'].iloc[0]} ({df_p['Qtd Caixas'].sum()} Caixas)", expanded=True):
