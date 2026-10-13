@@ -63,6 +63,10 @@ def carregar_base_mestre(caminho):
     df["QUANTIDADE DE CAIXAS POR FILEIRA"] = pd.to_numeric(df["QUANTIDADE DE CAIXAS POR FILEIRA"], errors="coerce").fillna(1).astype(int)
     df["ALTURA"] = pd.to_numeric(df["ALTURA"], errors="coerce").fillna(1).astype(int)
     
+    # Colunas normalizadas para busca sem distinção de formato
+    df["SKU_NORMALIZADO"] = df["SKU"].apply(lambda s: re.sub(r"\D", "", str(s)))
+    df["NOME_NORMALIZADO"] = df["NOME DO PRODUTO"].str.upper().str.strip()
+    
     # Agrupamento interno por Família
     df["FAMILIA"] = df["SKU"].apply(lambda x: ".".join(x.split(".")[:2]) if "." in x else str(x)[:4])
     return df
@@ -72,6 +76,40 @@ if not CAMINHO_EXCEL:
     st.stop()
 
 df_mestre = carregar_base_mestre(CAMINHO_EXCEL)
+
+# --- FUNÇÃO AUXILIAR DE BUSCA NA BASE MESTRE ---
+def buscar_produto_na_base(termo_sku, termo_nome, df_ref):
+    """
+    Busca prioritariamente pelo SKU. Se não encontrar, busca pela coluna NOME DO PRODUTO.
+    """
+    termo_sku = str(termo_sku or "").strip()
+    termo_nome = str(termo_nome or "").strip()
+    
+    # 1. Busca exata por SKU
+    if termo_sku and termo_sku.lower() != "nan":
+        m = df_ref[df_ref["SKU"] == termo_sku]
+        if not m.empty:
+            return m.iloc[0]
+        # Tentativa de SKU apenas com números
+        sku_num = re.sub(r"\D", "", termo_sku)
+        if sku_num:
+            m = df_ref[df_ref["SKU_NORMALIZADO"] == sku_num]
+            if not m.empty:
+                return m.iloc[0]
+                
+    # 2. Fallback: Busca pela coluna NOME DO PRODUTO
+    if termo_nome and termo_nome.lower() != "nan":
+        nome_up = termo_nome.upper()
+        # Correspondência exata de nome
+        m = df_ref[df_ref["NOME_NORMALIZADO"] == nome_up]
+        if not m.empty:
+            return m.iloc[0]
+        # Correspondência parcial/contém
+        m = df_ref[df_ref["NOME_NORMALIZADO"].str.contains(re.escape(nome_up), na=False)]
+        if not m.empty:
+            return m.iloc[0]
+            
+    return None
 
 # --- INTERFACE DE ENTRADA DO PEDIDO ---
 st.title("📦 Otimizador de Paletização para Exportação")
@@ -93,19 +131,23 @@ with tab_upload:
             df_ped.columns = df_ped.columns.str.strip().str.upper()
             
             col_sku = next((c for c in df_ped.columns if "SKU" in c), None)
+            col_nome = next((c for c in df_ped.columns if any(k in c for k in ["NOME", "PRODUTO", "DESCRICAO", "DESCRIÇÃO"])), None)
             col_qtd = next((c for c in df_ped.columns if any(k in c for k in ["QTD", "QUANTIDADE", "CAIXAS"])), None)
             
-            if col_sku and col_qtd:
+            if col_qtd and (col_sku or col_nome):
                 itens_importados = []
+                nao_encontrados = []
+                
                 for _, r in df_ped.iterrows():
-                    sku_limpo = str(r[col_sku]).strip()
+                    val_sku = str(r[col_sku]).strip() if col_sku else ""
+                    val_nome = str(r[col_nome]).strip() if col_nome else ""
                     qtd = int(pd.to_numeric(r[col_qtd], errors="coerce") or 0)
+                    
                     if qtd > 0:
-                        mestre_item = df_mestre[df_mestre["SKU"] == sku_limpo]
-                        if not mestre_item.empty:
-                            info = mestre_item.iloc[0]
+                        info = buscar_produto_na_base(val_sku, val_nome, df_mestre)
+                        if info is not None:
                             itens_importados.append({
-                                "SKU": sku_limpo,
+                                "SKU": str(info["SKU"]),
                                 "Produto": info["NOME DO PRODUTO"],
                                 "Familia": info["FAMILIA"],
                                 "Nº Caixa": int(info["NUMERO DA CAIXA"]),
@@ -115,11 +157,17 @@ with tab_upload:
                                 "Altura": int(info["ALTURA"]),
                                 "Capacidade_Pallet": int(info["QUANTIDADE DE CAIXAS NO PALLET"]),
                             })
+                        else:
+                            identificador = val_sku if val_sku else val_nome
+                            nao_encontrados.append(f"{identificador} (Qtd: {qtd})")
+                            
                 if st.button("📥 Carregar Itens para o Pedido"):
                     st.session_state.carrinho = itens_importados
                     st.success(f"{len(itens_importados)} SKUs carregados com sucesso!")
+                    if nao_encontrados:
+                        st.warning(f"⚠️ {len(nao_encontrados)} item(ns) não foram localizados na planilha COMEX (nem por SKU nem por Nome do Produto):\n• " + "\n• ".join(nao_encontrados))
             else:
-                st.warning("A folha de cálculo deve conter pelo menos as colunas 'SKU' e 'QUANTIDADE'.")
+                st.warning("A folha de cálculo deve conter uma coluna de QUANTIDADE e ao menos uma coluna de identificação ('SKU' ou 'PRODUTO').")
         except Exception as e:
             st.error(f"Erro ao processar o ficheiro: {e}")
 
@@ -363,7 +411,7 @@ def gerar_dataframe_operador(pallets, itens_pedido):
                     "Produto": info.get("Produto", "Desconhecido"),
                     "Caixa Nº": info.get("Nº Caixa", "-"),
                     "Qtd Caixas": qtd,
-                    "Altura": info.get("Altura", "-"),  # Altura individual de cada SKU
+                    "Altura": info.get("Altura", "-"),
                     "Total Peças": total_pecas_linha,
                     "Cx / Fileira": info.get("Caixas_Por_Fileira", "-"),
                     "Status Fileira": "Completa" if c["completa"] else "Incompleta (Topo)",
@@ -544,7 +592,6 @@ if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
         total_cx_global = df_operador["Qtd Caixas"].sum()
         total_pc_global = df_operador["Total Peças"].sum()
         
-        # Três métricas principais: Pallets, Total Geral de Caixas e Total Geral de Peças
         c1, c2, c3 = st.columns(3)
         c1.metric("📦 Total de Pallets", f"{len(resultado_pallets)}")
         c2.metric("📦 Total Geral de Caixas", f"{total_cx_global:,} cx".replace(",", "."))
@@ -579,7 +626,7 @@ if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
         
         st.markdown("---")
         
-        # Exibição individual dos Pallets com a coluna Altura linha a linha
+        # Exibição individual dos Pallets
         for num_p in sorted(df_operador["Pallet_Num"].unique()):
             df_p = df_operador[df_operador["Pallet_Num"] == num_p]
             total_cx_pallet = int(df_p["Qtd Caixas"].sum())
