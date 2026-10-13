@@ -40,6 +40,18 @@ st.markdown(
         font-size: 1.15em;
         color: #003366;
     }
+    .tabela-cabecalho {
+        font-weight: bold;
+        background-color: #F0F2F6;
+        padding: 8px 10px;
+        border-radius: 4px;
+        margin-bottom: 8px;
+    }
+    .linha-pedido {
+        padding: 6px 10px;
+        border-bottom: 1px solid #E6E9EF;
+        align-items: center;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -63,11 +75,8 @@ def carregar_base_mestre(caminho):
     df["QUANTIDADE DE CAIXAS POR FILEIRA"] = pd.to_numeric(df["QUANTIDADE DE CAIXAS POR FILEIRA"], errors="coerce").fillna(1).astype(int)
     df["ALTURA"] = pd.to_numeric(df["ALTURA"], errors="coerce").fillna(1).astype(int)
     
-    # Colunas normalizadas para busca sem distinção de formato
     df["SKU_NORMALIZADO"] = df["SKU"].apply(lambda s: re.sub(r"\D", "", str(s)))
     df["NOME_NORMALIZADO"] = df["NOME DO PRODUTO"].str.upper().str.strip()
-    
-    # Agrupamento interno por Família
     df["FAMILIA"] = df["SKU"].apply(lambda x: ".".join(x.split(".")[:2]) if "." in x else str(x)[:4])
     return df
 
@@ -77,48 +86,43 @@ if not CAMINHO_EXCEL:
 
 df_mestre = carregar_base_mestre(CAMINHO_EXCEL)
 
-# --- FUNÇÃO AUXILIAR DE BUSCA NA BASE MESTRE ---
 def buscar_produto_na_base(termo_sku, termo_nome, df_ref):
-    """
-    Busca prioritariamente pelo SKU. Se não encontrar, busca pela coluna NOME DO PRODUTO.
-    """
     termo_sku = str(termo_sku or "").strip()
     termo_nome = str(termo_nome or "").strip()
     
-    # 1. Busca exata por SKU
     if termo_sku and termo_sku.lower() != "nan":
         m = df_ref[df_ref["SKU"] == termo_sku]
         if not m.empty:
             return m.iloc[0]
-        # Tentativa de SKU apenas com números
         sku_num = re.sub(r"\D", "", termo_sku)
         if sku_num:
             m = df_ref[df_ref["SKU_NORMALIZADO"] == sku_num]
             if not m.empty:
                 return m.iloc[0]
                 
-    # 2. Fallback: Busca pela coluna NOME DO PRODUTO
     if termo_nome and termo_nome.lower() != "nan":
         nome_up = termo_nome.upper()
-        # Correspondência exata de nome
         m = df_ref[df_ref["NOME_NORMALIZADO"] == nome_up]
         if not m.empty:
             return m.iloc[0]
-        # Correspondência parcial/contém
         m = df_ref[df_ref["NOME_NORMALIZADO"].str.contains(re.escape(nome_up), na=False)]
         if not m.empty:
             return m.iloc[0]
             
     return None
 
+# --- ESTADO DA SESSÃO ---
+if "carrinho" not in st.session_state:
+    st.session_state.carrinho = []
+
+if "sku_para_excluir" not in st.session_state:
+    st.session_state.sku_para_excluir = None
+
 # --- INTERFACE DE ENTRADA DO PEDIDO ---
 st.title("📦 Otimizador de Paletização para Exportação")
 st.markdown("Preencha os itens manualmente ou faça o carregamento da folha de cálculo enviada pelo COMEX.")
 
 tab_upload, tab_manual = st.tabs(["📁 Importar Folha de Cálculo", "✍️ Inserção Manual"])
-
-if "carrinho" not in st.session_state:
-    st.session_state.carrinho = []
 
 with tab_upload:
     arquivo_pedido = st.file_uploader("Selecione o ficheiro do pedido (.xlsx ou .csv):", type=["xlsx", "xls", "csv"])
@@ -163,6 +167,7 @@ with tab_upload:
                             
                 if st.button("📥 Carregar Itens para o Pedido"):
                     st.session_state.carrinho = itens_importados
+                    st.session_state.sku_para_excluir = None
                     st.success(f"{len(itens_importados)} SKUs carregados com sucesso!")
                     if nao_encontrados:
                         st.warning(f"⚠️ {len(nao_encontrados)} item(ns) não foram localizados na planilha COMEX (nem por SKU nem por Nome do Produto):\n• " + "\n• ".join(nao_encontrados))
@@ -198,20 +203,62 @@ with tab_manual:
                 "Altura": int(info_man["ALTURA"]),
                 "Capacidade_Pallet": int(info_man["QUANTIDADE DE CAIXAS NO PALLET"]),
             })
+        st.session_state.sku_para_excluir = None
         st.success("Artigo adicionado!")
 
-# --- RESUMO DO PEDIDO ---
+# --- RESUMO DO PEDIDO COM EXCLUSÃO INDIVIDUAL ---
 st.markdown("---")
 nome_cliente = st.text_input("Identificação do Pedido / Cliente:", placeholder="Ex: Exportação Pedido #45882")
 
 if st.session_state.carrinho:
-    df_carrinho = pd.DataFrame(st.session_state.carrinho)
-    st.dataframe(
-        df_carrinho[["SKU", "Produto", "Nº Caixa", "Qtd_Caixas", "Caixas_Por_Fileira", "Altura"]],
-        use_container_width=True
-    )
+    st.subheader("🛒 Itens Carregados no Pedido")
+
+    # Alerta de confirmação caso o operador tenha clicado na lixeira
+    if st.session_state.sku_para_excluir is not None:
+        idx_del = st.session_state.sku_para_excluir
+        if 0 <= idx_del < len(st.session_state.carrinho):
+            item_alvo = st.session_state.carrinho[idx_del]
+            st.warning(f"⚠️ **Deseja realmente apagar este item?**\n\n• **SKU:** `{item_alvo['SKU']}` | **Produto:** {item_alvo['Produto']} | **Qtd:** {item_alvo['Qtd_Caixas']} caixas")
+            c_conf1, c_conf2, _ = st.columns([1.2, 1.2, 5])
+            with c_conf1:
+                if st.button("✅ Sim, excluir", key="btn_confirma_exclusao", use_container_width=True):
+                    st.session_state.carrinho.pop(idx_del)
+                    st.session_state.sku_para_excluir = None
+                    st.rerun()
+            with c_conf2:
+                if st.button("❌ Cancelar", key="btn_cancela_exclusao", use_container_width=True):
+                    st.session_state.sku_para_excluir = None
+                    st.rerun()
+        else:
+            st.session_state.sku_para_excluir = None
+
+    # Cabeçalho da Tabela
+    c_h1, c_h2, c_h3, c_h4, c_h5, c_h6, c_h7 = st.columns([1.8, 4.2, 1.2, 1.3, 1.5, 1.0, 0.8])
+    c_h1.markdown("**SKU**")
+    c_h2.markdown("**Produto**")
+    c_h3.markdown("**Nº Caixa**")
+    c_h4.markdown("**Qtd Caixas**")
+    c_h5.markdown("**Cx / Fileira**")
+    c_h6.markdown("**Altura**")
+    c_h7.markdown("**Ação**")
+
+    # Linhas dos itens com botão de lixeira individual
+    for i, it in enumerate(st.session_state.carrinho):
+        c1, c2, c3, c4, c5, c6, c7 = st.columns([1.8, 4.2, 1.2, 1.3, 1.5, 1.0, 0.8])
+        c1.write(it["SKU"])
+        c2.write(it["Produto"])
+        c3.write(str(it["Nº Caixa"]))
+        c4.write(f"{it['Qtd_Caixas']} cx")
+        c5.write(str(it["Caixas_Por_Fileira"]))
+        c6.write(str(it["Altura"]))
+        if c7.button("🗑️", key=f"del_sku_{i}_{it['SKU']}", help="Excluir este SKU"):
+            st.session_state.sku_para_excluir = i
+            st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔴 Limpar Todo o Pedido"):
         st.session_state.carrinho = []
+        st.session_state.sku_para_excluir = None
         st.rerun()
 
 # --- MOTOR DE REGRAS DE PALETIZAÇÃO ---
@@ -598,7 +645,6 @@ if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
         c3.metric("🧩 Total Geral de Peças", f"{total_pc_global:,} pçs".replace(",", "."))
         st.markdown("---")
         
-        # Botões de Download
         col_btn1, col_btn2 = st.columns(2)
         cliente_limpo = re.sub(r'[\\/*?:"<>|]', "", nome_cliente.strip()) or "PEDIDO"
         data_str = datetime.now().strftime("%d-%m-%Y")
@@ -626,7 +672,6 @@ if st.button("🚀 Otimizar e Gerar Instruções de Paletização"):
         
         st.markdown("---")
         
-        # Exibição individual dos Pallets
         for num_p in sorted(df_operador["Pallet_Num"].unique()):
             df_p = df_operador[df_operador["Pallet_Num"] == num_p]
             total_cx_pallet = int(df_p["Qtd Caixas"].sum())
