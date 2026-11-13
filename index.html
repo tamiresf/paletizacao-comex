@@ -1,0 +1,1275 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Paletização - COMEX</title>
+    
+    <!-- Bibliotecas externas (CDN) para Excel, PDF e Ícones -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/exceljs@4.3.0/dist/exceljs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+
+    <style>
+        :root {
+            --primary: #0055B8;
+            --primary-dark: #003366;
+            --bg-light: #F4F6F9;
+            --card-bg: #FFFFFF;
+            --border-color: #DDE2E8;
+            --success: #198754;
+            --danger: #DC3545;
+            --warning-bg: #FFF3CD;
+            --warning-border: #FFECB5;
+        }
+
+        * {
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-light);
+            color: #222;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: var(--card-bg);
+            padding: 20px 25px;
+            border-radius: 8px;
+            border-left: 6px solid var(--primary);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 1.6rem;
+            color: var(--primary-dark);
+        }
+
+        header p {
+            margin: 5px 0 0;
+            color: #555;
+            font-size: 0.95rem;
+        }
+
+        .status-badge {
+            padding: 8px 14px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            background: #E6F0FA;
+            color: var(--primary);
+            border: 1px solid var(--primary);
+        }
+
+        .status-badge.error {
+            background: #F8D7DA;
+            color: #842029;
+            border-color: #F5C2C7;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+            margin-bottom: 20px;
+            border: 1px solid var(--border-color);
+        }
+
+        /* Abas */
+        .tabs {
+            display: flex;
+            border-bottom: 2px solid var(--border-color);
+            margin-bottom: 18px;
+            gap: 10px;
+        }
+
+        .tab-btn {
+            padding: 10px 18px;
+            border: none;
+            background: none;
+            font-size: 1rem;
+            font-weight: 600;
+            color: #666;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+        }
+
+        .tab-btn.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Inputs e Botões */
+        .form-row {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            align-items: flex-end;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .form-group.grow {
+            flex: 1;
+            min-width: 260px;
+        }
+
+        label {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: #333;
+        }
+
+        input[type="text"], input[type="number"], input[type="file"], select {
+            padding: 10px 12px;
+            border: 1px solid #CCC;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            background: #FFF;
+        }
+
+        button.btn {
+            padding: 10px 18px;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        button.btn:hover { opacity: 0.9; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-success { background: var(--success); color: white; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-outline { background: #FFF; border: 1px solid #CCC; color: #333; }
+        .btn-sm { padding: 5px 10px; font-size: 0.85rem; }
+
+        /* Tabelas */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 0.9rem;
+        }
+
+        th, td {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border-color);
+            text-align: left;
+        }
+
+        th {
+            background-color: #F0F2F6;
+            font-weight: 700;
+            color: #333;
+        }
+
+        .text-center { text-align: center; }
+
+        /* Alertas */
+        .alert {
+            padding: 12px 16px;
+            border-radius: 6px;
+            margin-top: 12px;
+            font-size: 0.9rem;
+        }
+        .alert-warning { background: var(--warning-bg); border: 1px solid var(--warning-border); color: #664D03; }
+        .alert-success { background: #D1E7DD; border: 1px solid #BADBCC; color: #0F5132; }
+
+        /* Métricas */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .metric-card {
+            background: #F8FAFC;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px 20px;
+        }
+
+        .metric-card span {
+            font-size: 0.85rem;
+            color: #555;
+            font-weight: 600;
+        }
+
+        .metric-card h2 {
+            margin: 6px 0 0;
+            font-size: 1.6rem;
+            color: var(--primary-dark);
+        }
+
+        /* Cards de Pallet */
+        .pallet-card {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin-bottom: 18px;
+            overflow: hidden;
+            background: #FFF;
+        }
+
+        .pallet-header {
+            background: #F0F4F8;
+            padding: 12px 18px;
+            font-weight: 700;
+            color: var(--primary-dark);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+        }
+
+        .pallet-body {
+            padding: 15px 18px;
+        }
+
+        .pallet-obs {
+            font-size: 0.85rem;
+            color: #666;
+            margin: 0 0 10px;
+        }
+
+        .total-box-container {
+            display: flex;
+            justify-content: flex-end;
+            gap: 15px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+
+        .total-card {
+            background-color: #E6F0FA;
+            border: 1px solid var(--primary);
+            border-radius: 6px;
+            padding: 8px 18px;
+            color: var(--primary);
+            font-size: 0.95rem;
+        }
+
+        .total-card b {
+            font-size: 1.1rem;
+            color: var(--primary-dark);
+        }
+
+        .export-bar {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 600px) {
+            .export-bar { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <div>
+            <h1>📦 Otimizador de Paletização para Exportação</h1>
+            <p>Versão Web Estática (GitHub Pages) — Carregamento instantâneo</p>
+        </div>
+        <div id="statusBase" class="status-badge">⏳ Carregando COMEX.xlsx...</div>
+    </header>
+
+    <!-- Fallback caso o COMEX.xlsx não seja carregado automaticamente -->
+    <div id="boxUploadBaseManual" class="card" style="display: none; border-left: 5px solid #DC3545;">
+        <p style="margin-top:0; font-weight:600; color:#842029;">⚠️ Não foi possível carregar 'COMEX.xlsx' automaticamente do repositório.</p>
+        <p style="font-size:0.9rem; color:#555;">Selecione manualmente a planilha mestre <b>COMEX.xlsx</b> abaixo para liberar o sistema:</p>
+        <input type="file" id="inputBaseMestre" accept=".xlsx, .xls">
+    </div>
+
+    <!-- Entrada de Pedido -->
+    <div class="card">
+        <div class="tabs">
+            <button class="tab-btn active" onclick="mudarAba('tabUpload', this)">📁 Importar Folha de Cálculo</button>
+            <button class="tab-btn" onclick="mudarAba('tabManual', this)">✍️ Inserção Manual</button>
+        </div>
+
+        <div id="tabUpload" class="tab-content active">
+            <div class="form-row">
+                <div class="form-group grow">
+                    <label>Selecione o ficheiro do pedido (.xlsx, .xls ou .csv):</label>
+                    <input type="file" id="inputPedido" accept=".xlsx, .xls, .csv">
+                </div>
+                <button class="btn btn-primary" onclick="processarArquivoPedido()">📥 Carregar Itens para o Pedido</button>
+            </div>
+            <div id="feedbackImportacao"></div>
+        </div>
+
+        <div id="tabManual" class="tab-content">
+            <div class="form-row">
+                <div class="form-group grow">
+                    <label>Pesquisar SKU / Artigo:</label>
+                    <input type="text" id="inputBuscaSku" list="listaProdutos" placeholder="Digite o código SKU ou nome do produto..." onchange="atualizarQtdPadraoManual()">
+                    <datalist id="listaProdutos"></datalist>
+                </div>
+                <div class="form-group" style="width: 140px;">
+                    <label>Qtd Caixas:</label>
+                    <input type="number" id="inputQtdManual" min="1" value="1">
+                </div>
+                <button class="btn btn-primary" onclick="adicionarManual()">➕ Adicionar SKU</button>
+            </div>
+            <div id="feedbackManual"></div>
+        </div>
+    </div>
+
+    <!-- Carrinho / Resumo do Pedido -->
+    <div class="card">
+        <div class="form-group" style="margin-bottom: 15px;">
+            <label>Identificação do Pedido / Cliente:</label>
+            <input type="text" id="nomeCliente" placeholder="Ex: Exportação Pedido #45882">
+        </div>
+
+        <div id="areaCarrinho" style="display: none;">
+            <h3 style="margin-bottom: 10px; color: var(--primary-dark);">🛒 Itens Carregados no Pedido</h3>
+            
+            <!-- Caixa de confirmação de exclusão -->
+            <div id="boxConfirmacaoExclusao" class="alert alert-warning" style="display: none; margin-bottom: 15px;">
+                <p id="textoConfirmacaoExclusao" style="margin: 0 0 10px;"></p>
+                <button class="btn btn-danger btn-sm" onclick="confirmarExclusao()">✅ Sim, excluir</button>
+                <button class="btn btn-outline btn-sm" onclick="cancelarExclusao()">❌ Cancelar</button>
+            </div>
+
+            <div style="overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>SKU</th>
+                            <th>Produto</th>
+                            <th class="text-center">Nº Caixa</th>
+                            <th class="text-center">Qtd Caixas</th>
+                            <th class="text-center">Cx / Fileira</th>
+                            <th class="text-center">Altura</th>
+                            <th class="text-center">Ação</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tabelaCarrinhoBody"></tbody>
+                </table>
+            </div>
+
+            <div style="margin-top: 15px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                <button class="btn btn-danger btn-sm" onclick="limparCarrinho()">🔴 Limpar Todo o Pedido</button>
+                <button class="btn btn-success" onclick="executarOtimizacao()">🚀 Otimizar e Gerar Instruções de Paletização</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Resultados -->
+    <div id="areaResultados" style="display: none;">
+        <div class="card">
+            <h3 style="margin-top: 0; color: var(--primary-dark);">📋 Resumo da Carga Paletizada</h3>
+            
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <span>📦 Total de Pallets</span>
+                    <h2 id="metTotalPallets">0</h2>
+                </div>
+                <div class="metric-card">
+                    <span>📦 Total Geral de Caixas</span>
+                    <h2 id="metTotalCaixas">0 cx</h2>
+                </div>
+                <div class="metric-card">
+                    <span>🧩 Total Geral de Peças</span>
+                    <h2 id="metTotalPecas">0 pçs</h2>
+                </div>
+            </div>
+
+            <div class="export-bar">
+                <button class="btn btn-success" onclick="baixarExcelModelo()">📊 Baixar Paletização em Excel (.xlsx)</button>
+                <button class="btn btn-primary" onclick="baixarPdfOperacional()">📄 Baixar Relatório em PDF (.pdf)</button>
+            </div>
+
+            <div id="listaPalletsRender"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- VARIÁVEIS GLOBAIS ---
+    let baseMestre = [];
+    let carrinho = [];
+    let idxParaExcluir = null;
+    let ultimoResultadoLinhas = [];
+    let ultimoResultadoPallets = [];
+
+    // --- NAVEGAÇÃO DE ABAS ---
+    function mudarAba(abaId, btn) {
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+        document.getElementById(abaId).classList.add('active');
+        btn.classList.add('active');
+    }
+
+    // --- CARREGAMENTO DA BASE MESTRE (COMEX.xlsx) ---
+    window.addEventListener('DOMContentLoaded', async () => {
+        const caminhos = ['COMEX.xlsx', 'data/COMEX.xlsx'];
+        let carregou = false;
+
+        for (const caminho of caminhos) {
+            try {
+                const resp = await fetch(caminho);
+                if (resp.ok) {
+                    const arrayBuffer = await resp.arrayBuffer();
+                    processarWorkbookBase(arrayBuffer);
+                    carregou = true;
+                    break;
+                }
+            } catch (e) {
+                console.warn(`Tentativa falhou para ${caminho}:`, e);
+            }
+        }
+
+        if (!carregou) {
+            const badge = document.getElementById('statusBase');
+            badge.textContent = '⚠️ Base COMEX.xlsx não localizada';
+            badge.classList.add('error');
+            document.getElementById('boxUploadBaseManual').style.display = 'block';
+        }
+    });
+
+    document.getElementById('inputBaseMestre').addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+            processarWorkbookBase(evt.target.result);
+            document.getElementById('boxUploadBaseManual').style.display = 'none';
+        };
+        reader.readAsArrayBuffer(file);
+    });
+
+    function processarWorkbookBase(arrayBuffer) {
+        const wb = XLSX.read(arrayBuffer, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rawData = XLSX.utils.sheet_to_json(ws, { defval: "" });
+
+        baseMestre = [];
+        const datalist = document.getElementById('listaProdutos');
+        datalist.innerHTML = '';
+
+        rawData.forEach(row => {
+            // Normaliza chaves removendo espaços extras
+            const r = {};
+            for (let k in row) {
+                r[k.trim()] = row[k];
+            }
+
+            if (!r["SKU"] || r["NUMERO DA CAIXA"] === "" || r["QUANTIDADE DE CAIXAS NO PALLET"] === "" || r["QUANTIDADE DE CAIXAS POR FILEIRA"] === "" || r["ALTURA"] === "") {
+                return;
+            }
+
+            const sku = String(r["SKU"]).trim();
+            const nome = String(r["NOME DO PRODUTO"] || "").trim();
+            const numCaixa = parseInt(r["NUMERO DA CAIXA"]) || 0;
+            const pecas = parseInt(r["QUANTIDADE DE PEÇAS"]) || 1;
+            const capPallet = parseInt(r["QUANTIDADE DE CAIXAS NO PALLET"]) || 1;
+            const cxFileira = parseInt(r["QUANTIDADE DE CAIXAS POR FILEIRA"]) || 1;
+            const altura = parseInt(r["ALTURA"]) || 1;
+
+            const skuNorm = sku.replace(/\D/g, '');
+            const nomeNorm = nome.toUpperCase().trim();
+            const familia = sku.includes('.') ? sku.split('.').slice(0, 2).join('.') : sku.slice(0, 4);
+
+            const item = {
+                SKU: sku,
+                NOME_PRODUTO: nome,
+                NUMERO_CAIXA: numCaixa,
+                QUANTIDADE_PECAS: pecas,
+                CAPACIDADE_PALLET: capPallet,
+                CAIXAS_POR_FILEIRA: cxFileira,
+                ALTURA: altura,
+                SKU_NORMALIZADO: skuNorm,
+                NOME_NORMALIZADO: nomeNorm,
+                FAMILIA: familia
+            };
+
+            baseMestre.push(item);
+
+            const opt = document.createElement('option');
+            opt.value = `${sku} - ${nome}`;
+            datalist.appendChild(opt);
+        });
+
+        const badge = document.getElementById('statusBase');
+        badge.textContent = `✅ Base COMEX carregada (${baseMestre.length} SKUs)`;
+        badge.classList.remove('error');
+    }
+
+    function buscarProdutoNaBase(termoSku, termoNome) {
+        const s = String(termoSku || "").trim();
+        const n = String(termoNome || "").trim();
+
+        if (s && s.toLowerCase() !== "nan") {
+            let m = baseMestre.find(x => x.SKU === s);
+            if (m) return m;
+            const sNum = s.replace(/\D/g, '');
+            if (sNum) {
+                m = baseMestre.find(x => x.SKU_NORMALIZADO === sNum);
+                if (m) return m;
+            }
+        }
+
+        if (n && n.toLowerCase() !== "nan") {
+            const nUp = n.toUpperCase();
+            let m = baseMestre.find(x => x.NOME_NORMALIZADO === nUp);
+            if (m) return m;
+            m = baseMestre.find(x => x.NOME_NORMALIZADO.includes(nUp));
+            if (m) return m;
+        }
+
+        return null;
+    }
+
+    // --- IMPORTAÇÃO DE PLANILHA DE PEDIDO ---
+    function processarArquivoPedido() {
+        const fileInput = document.getElementById('inputPedido');
+        const feedback = document.getElementById('feedbackImportacao');
+        feedback.innerHTML = '';
+
+        if (!fileInput.files.length) {
+            feedback.innerHTML = '<div class="alert alert-warning">Selecione um arquivo primeiro.</div>';
+            return;
+        }
+
+        const file = fileInput.files[0];
+        const reader = new FileReader();
+
+        reader.onload = function(e) {
+            try {
+                const wb = XLSX.read(e.target.result, { type: 'array' });
+                const ws = wb.Sheets[wb.SheetNames[0]];
+                const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+
+                if (!rows.length) {
+                    feedback.innerHTML = '<div class="alert alert-warning">A planilha está vazia.</div>';
+                    return;
+                }
+
+                const colunas = Object.keys(rows[0]).map(c => c.trim().toUpperCase());
+                const colSku = Object.keys(rows[0]).find(c => c.trim().toUpperCase().includes("SKU"));
+                const colNome = Object.keys(rows[0]).find(c => ["NOME", "PRODUTO", "DESCRICAO", "DESCRIÇÃO"].some(k => c.trim().toUpperCase().includes(k)));
+                const colQtd = Object.keys(rows[0]).find(c => ["QTD", "QUANTIDADE", "CAIXAS"].some(k => c.trim().toUpperCase().includes(k)));
+
+                if (!colQtd || (!colSku && !colNome)) {
+                    feedback.innerHTML = '<div class="alert alert-warning">A folha de cálculo deve conter uma coluna de QUANTIDADE e ao menos uma coluna de identificação ("SKU" ou "PRODUTO").</div>';
+                    return;
+                }
+
+                const itensImportados = [];
+                const naoEncontrados = [];
+
+                rows.forEach(r => {
+                    const valSku = colSku ? String(r[colSku]).trim() : "";
+                    const valNome = colNome ? String(r[colNome]).trim() : "";
+                    const qtd = parseInt(r[colQtd]) || 0;
+
+                    if (qtd > 0) {
+                        const info = buscarProdutoNaBase(valSku, valNome);
+                        if (info) {
+                            itensImportados.push({
+                                SKU: info.SKU,
+                                Produto: info.NOME_PRODUTO,
+                                Familia: info.FAMILIA,
+                                NumCaixa: info.NUMERO_CAIXA,
+                                Qtd_Caixas: qtd,
+                                Pecas_Por_Caixa: info.QUANTIDADE_PECAS,
+                                Caixas_Por_Fileira: info.CAIXAS_POR_FILEIRA,
+                                Altura: info.ALTURA,
+                                Capacidade_Pallet: info.CAPACIDADE_PALLET
+                            });
+                        } else {
+                            const id = valSku || valNome;
+                            naoEncontrados.push(`${id} (Qtd: ${qtd})`);
+                        }
+                    }
+                });
+
+                carrinho = itensImportados;
+                idxParaExcluir = null;
+                renderizarCarrinho();
+
+                let htmlMsg = `<div class="alert alert-success">✅ ${itensImportados.length} SKUs carregados com sucesso!</div>`;
+                if (naoEncontrados.length > 0) {
+                    htmlMsg += `<div class="alert alert-warning">⚠️ ${naoEncontrados.length} item(ns) não foram localizados na planilha COMEX:<br>• ${naoEncontrados.join('<br>• ')}</div>`;
+                }
+                feedback.innerHTML = htmlMsg;
+
+            } catch (err) {
+                feedback.innerHTML = `<div class="alert alert-warning">Erro ao processar o ficheiro: ${err.message}</div>`;
+            }
+        };
+
+        reader.readAsArrayBuffer(file);
+    }
+
+    // --- INSERÇÃO MANUAL ---
+    function atualizarQtdPadraoManual() {
+        const val = document.getElementById('inputBuscaSku').value;
+        const sku = val.split(' - ')[0].trim();
+        const info = baseMestre.find(x => x.SKU === sku);
+        if (info) {
+            document.getElementById('inputQtdManual').value = info.CAPACIDADE_PALLET;
+        }
+    }
+
+    function adicionarManual() {
+        const val = document.getElementById('inputBuscaSku').value;
+        const sku = val.split(' - ')[0].trim();
+        const qtd = parseInt(document.getElementById('inputQtdManual').value) || 0;
+        const feedback = document.getElementById('feedbackManual');
+
+        const info = buscarProdutoNaBase(sku, val);
+        if (!info || qtd <= 0) {
+            feedback.innerHTML = '<div class="alert alert-warning">Selecione um SKU válido da lista e informe uma quantidade maior que zero.</div>';
+            return;
+        }
+
+        const existente = carrinho.find(it => it.SKU === info.SKU);
+        if (existente) {
+            existente.Qtd_Caixas += qtd;
+        } else {
+            carrinho.push({
+                SKU: info.SKU,
+                Produto: info.NOME_PRODUTO,
+                Familia: info.FAMILIA,
+                NumCaixa: info.NUMERO_CAIXA,
+                Qtd_Caixas: qtd,
+                Pecas_Por_Caixa: info.QUANTIDADE_PECAS,
+                Caixas_Por_Fileira: info.CAIXAS_POR_FILEIRA,
+                Altura: info.ALTURA,
+                Capacidade_Pallet: info.CAPACIDADE_PALLET
+            });
+        }
+
+        idxParaExcluir = null;
+        renderizarCarrinho();
+        feedback.innerHTML = `<div class="alert alert-success">✅ Artigo <b>${info.SKU}</b> adicionado!</div>`;
+        setTimeout(() => { feedback.innerHTML = ''; }, 2500);
+    }
+
+    // --- GESTÃO DO CARRINHO ---
+    function renderizarCarrinho() {
+        const area = document.getElementById('areaCarrinho');
+        const tbody = document.getElementById('tabelaCarrinhoBody');
+        const boxConf = document.getElementById('boxConfirmacaoExclusao');
+
+        if (!carrinho.length) {
+            area.style.display = 'none';
+            document.getElementById('areaResultados').style.display = 'none';
+            return;
+        }
+
+        area.style.display = 'block';
+
+        if (idxParaExcluir !== null && carrinho[idxParaExcluir]) {
+            const item = carrinho[idxParaExcluir];
+            document.getElementById('textoConfirmacaoExclusao').innerHTML = 
+                `⚠️ <b>Deseja realmente apagar este item?</b><br>• <b>SKU:</b> ${item.SKU} | <b>Produto:</b> ${item.Produto} | <b>Qtd:</b> ${item.Qtd_Caixas} caixas`;
+            boxConf.style.display = 'block';
+        } else {
+            boxConf.style.display = 'none';
+        }
+
+        tbody.innerHTML = carrinho.map((it, idx) => `
+            <tr>
+                <td><b>${it.SKU}</b></td>
+                <td>${it.Produto}</td>
+                <td class="text-center">${it.NumCaixa}</td>
+                <td class="text-center">${it.Qtd_Caixas} cx</td>
+                <td class="text-center">${it.Caixas_Por_Fileira}</td>
+                <td class="text-center">${it.Altura}</td>
+                <td class="text-center">
+                    <button class="btn btn-outline btn-sm" onclick="solicitarExclusao(${idx})" title="Excluir este SKU">🗑️</button>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    function solicitarExclusao(idx) {
+        idxParaExcluir = idx;
+        renderizarCarrinho();
+    }
+
+    function confirmarExclusao() {
+        if (idxParaExcluir !== null) {
+            carrinho.splice(idxParaExcluir, 1);
+            idxParaExcluir = null;
+            renderizarCarrinho();
+        }
+    }
+
+    function cancelarExclusao() {
+        idxParaExcluir = null;
+        renderizarCarrinho();
+    }
+
+    function limparCarrinho() {
+        carrinho = [];
+        idxParaExcluir = null;
+        renderizarCarrinho();
+    }
+
+    // --- MOTOR DE REGRAS DE PALETIZAÇÃO (PORTADO DO PYTHON) ---
+    function otimizarPaletizacao(itensPedido) {
+        const pallets = [];
+        const itens = [...itensPedido].sort((a, b) => {
+            if (a.Familia !== b.Familia) return a.Familia.localeCompare(b.Familia);
+            if (a.NumCaixa !== b.NumCaixa) return a.NumCaixa - b.NumCaixa;
+            return a.SKU.localeCompare(b.SKU);
+        });
+
+        let poolFileiras = [];
+        const caixasSoltas = [];
+
+        // 1. Pallets Fechados de SKU Único
+        for (const it of itens) {
+            const cap = it.Capacidade_Pallet;
+            const cpf = it.Caixas_Por_Fileira;
+            const hMax = it.Altura;
+            const qtd = it.Qtd_Caixas;
+
+            const palletsFechados = Math.floor(qtd / cap);
+            const sobraCaixas = qtd % cap;
+
+            for (let i = 0; i < palletsFechados; i++) {
+                const camadas = [];
+                for (let c = 0; c < hMax; c++) {
+                    camadas.push({ tipo_cx: it.NumCaixa, itens: { [it.SKU]: cpf }, completa: true });
+                }
+                pallets.push({
+                    tipo: "Pallet Fechado (SKU Único)",
+                    limite_fileiras: hMax,
+                    camadas: camadas,
+                    obs: "Pallet 100% ocupado por um único SKU."
+                });
+            }
+
+            const filCompletas = Math.floor(sobraCaixas / cpf);
+            const resto = sobraCaixas % cpf;
+
+            for (let i = 0; i < filCompletas; i++) {
+                poolFileiras.push({
+                    sku: it.SKU,
+                    tipo_cx: it.NumCaixa,
+                    familia: it.Familia,
+                    h_max: hMax,
+                    cpf: cpf,
+                    itens: { [it.SKU]: cpf }
+                });
+            }
+
+            if (resto > 0) {
+                caixasSoltas.push({
+                    sku: it.SKU,
+                    tipo_cx: it.NumCaixa,
+                    familia: it.Familia,
+                    h_max: hMax,
+                    cpf: cpf,
+                    qtd: resto
+                });
+            }
+        }
+
+        // 2. Consolidação de Caixas Soltas em Fileiras Mistas
+        const soltasAgrupadas = {};
+        for (const cs of caixasSoltas) {
+            if (!soltasAgrupadas[cs.tipo_cx]) soltasAgrupadas[cs.tipo_cx] = [];
+            soltasAgrupadas[cs.tipo_cx].push(cs);
+        }
+
+        for (const t in soltasAgrupadas) {
+            const listaCs = soltasAgrupadas[t];
+            if (!listaCs.length) continue;
+
+            const cpf = listaCs[0].cpf;
+            listaCs.sort((a, b) => {
+                if (b.h_max !== a.h_max) return b.h_max - a.h_max;
+                return a.familia.localeCompare(b.familia);
+            });
+
+            let camadaTemp = {};
+            let soma = 0;
+            let minH = 6;
+
+            for (const c of listaCs) {
+                while (c.qtd > 0) {
+                    const espaco = cpf - soma;
+                    const pegar = Math.min(espaco, c.qtd);
+                    camadaTemp[c.sku] = (camadaTemp[c.sku] || 0) + pegar;
+                    c.qtd -= pegar;
+                    soma += pegar;
+                    minH = Math.min(minH, c.h_max);
+
+                    if (soma === cpf) {
+                        poolFileiras.push({
+                            sku: null,
+                            tipo_cx: Number(t),
+                            familia: "Mista",
+                            h_max: minH,
+                            cpf: cpf,
+                            itens: camadaTemp
+                        });
+                        camadaTemp = {};
+                        soma = 0;
+                        minH = 6;
+                    }
+                }
+            }
+
+            if (Object.keys(camadaTemp).length > 0) {
+                for (const s in camadaTemp) {
+                    const ref = listaCs.find(x => x.sku === s);
+                    if (ref) ref.qtd = camadaTemp[s];
+                }
+            }
+        }
+
+        // 3. Pallets de Sobras com Fileiras Completas (Mesmo Tipo de Caixa)
+        const tiposPresentes = [...new Set(poolFileiras.map(f => f.tipo_cx))].sort((a, b) => b - a);
+
+        for (const t of tiposPresentes) {
+            let filsT = poolFileiras.filter(f => f.tipo_cx === t);
+            if (!filsT.length) continue;
+
+            const alturas = [...new Set(filsT.map(f => f.h_max))].sort((a, b) => b - a);
+            for (const h of alturas) {
+                let iguais = filsT.filter(f => f.h_max === h);
+                while (iguais.length >= h) {
+                    const lote = iguais.slice(0, h);
+                    lote.forEach(x => {
+                        filsT = filsT.filter(item => item !== x);
+                        poolFileiras = poolFileiras.filter(item => item !== x);
+                    });
+                    pallets.push({
+                        tipo: "Pallet Fechado (Mesma Caixa e Mesma Altura)",
+                        limite_fileiras: h,
+                        camadas: lote.map(f => ({ tipo_cx: t, itens: f.itens, completa: true })),
+                        obs: "Composto por fileiras completas da mesma caixa e mesma altura."
+                    });
+                    iguais = filsT.filter(f => f.h_max === h);
+                }
+            }
+
+            while (filsT.length > 0) {
+                const limH = Math.min(...filsT.map(f => f.h_max));
+                if (filsT.length >= limH) {
+                    const lote = filsT.slice(0, limH);
+                    lote.forEach(x => {
+                        filsT = filsT.filter(item => item !== x);
+                        poolFileiras = poolFileiras.filter(item => item !== x);
+                    });
+                    pallets.push({
+                        tipo: "Pallet Fechado (Mesma Caixa, Alturas Mistas)",
+                        limite_fileiras: limH,
+                        camadas: lote.map(f => ({ tipo_cx: t, itens: f.itens, completa: true })),
+                        obs: `Limite respeitado de ${limH} fileiras máximas.`
+                    });
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // 4. Combinação de Diferentes Tipos de Caixa
+        while (poolFileiras.length >= 4) {
+            const alturasCandidatas = poolFileiras.slice(0, 4).map(f => f.h_max);
+            const hLim = Math.min(...alturasCandidatas);
+            if (poolFileiras.length >= hLim) {
+                const lote = poolFileiras.slice(0, hLim);
+                lote.sort((a, b) => b.tipo_cx - a.tipo_cx);
+                lote.forEach(x => {
+                    poolFileiras = poolFileiras.filter(item => item !== x);
+                });
+                pallets.push({
+                    tipo: "Pallet Fechado (Caixas Mistas por Fileira Inteira)",
+                    limite_fileiras: hLim,
+                    camadas: lote.map(f => ({ tipo_cx: f.tipo_cx, itens: f.itens, completa: true })),
+                    obs: "Fileiras completas de diferentes caixas combinadas."
+                });
+            } else {
+                break;
+            }
+        }
+
+        // 5. Fechamento do Pallet Final
+        const soltasFinais = caixasSoltas.filter(cs => cs.qtd > 0);
+        if (poolFileiras.length > 0 || soltasFinais.length > 0) {
+            const camadasFinal = [];
+            for (const f of poolFileiras) {
+                camadasFinal.push({ tipo_cx: f.tipo_cx, itens: f.itens, completa: true });
+            }
+
+            if (soltasFinais.length > 0) {
+                const itensInc = {};
+                soltasFinais.forEach(cs => { itensInc[cs.sku] = cs.qtd; });
+                camadasFinal.push({ tipo_cx: soltasFinais[0].tipo_cx, itens: itensInc, completa: false });
+            }
+
+            if (camadasFinal.length < 2 && pallets.length > 0) {
+                const doador = pallets[pallets.length - 1];
+                if (doador.camadas.length > 2) {
+                    const camadaMovida = doador.camadas.pop();
+                    camadasFinal.unshift(camadaMovida);
+                    doador.obs += " (1 fileira transferida para o último pallet para cumprir o mínimo de 2 fileiras).";
+                }
+            }
+
+            pallets.push({
+                tipo: "Último Pallet (Sobras / Fileira Incompleta)",
+                limite_fileiras: camadasFinal.length,
+                camadas: camadasFinal,
+                obs: "Contém sobras finais de exportação e fileiras residuais."
+            });
+        }
+
+        return pallets;
+    }
+
+    function gerarLinhasOperador(pallets, itensPedido) {
+        const mapaItens = {};
+        itensPedido.forEach(i => { mapaItens[i.SKU] = i; });
+        const linhas = [];
+
+        pallets.forEach((p, idx) => {
+            const numPallet = idx + 1;
+            const qtdFileirasPallet = p.camadas.length;
+
+            p.camadas.forEach((c, posIdx) => {
+                const pos = posIdx + 1;
+                for (const sku in c.itens) {
+                    const qtd = c.itens[sku];
+                    const info = mapaItens[sku] || {};
+                    const pecasCx = info.Pecas_Por_Caixa || 1;
+
+                    linhas.push({
+                        Pallet_Num: numPallet,
+                        Pallet: `Pallet ${numPallet}`,
+                        Tipo_Pallet: p.tipo,
+                        Altura_Pallet: qtdFileirasPallet,
+                        Fileira: `${pos}ª fileira`,
+                        SKU: sku,
+                        Produto: info.Produto || "Desconhecido",
+                        Caixa_Num: info.NumCaixa || "-",
+                        Qtd_Caixas: qtd,
+                        Altura: info.Altura || "-",
+                        Total_Pecas: qtd * pecasCx,
+                        Cx_Fileira: info.Caixas_Por_Fileira || "-",
+                        Status_Fileira: c.completa ? "Completa" : "Incompleta (Topo)",
+                        Observacao: p.obs
+                    });
+                }
+            });
+        });
+
+        return linhas;
+    }
+
+    // --- EXECUÇÃO E RENDERIZAÇÃO NA TELA ---
+    function executarOtimizacao() {
+        if (!carrinho.length) return;
+
+        ultimoResultadoPallets = otimizarPaletizacao(carrinho);
+        ultimoResultadoLinhas = gerarLinhasOperador(ultimoResultadoPallets, carrinho);
+
+        const totalCx = ultimoResultadoLinhas.reduce((acc, r) => acc + r.Qtd_Caixas, 0);
+        const totalPc = ultimoResultadoLinhas.reduce((acc, r) => acc + r.Total_Pecas, 0);
+
+        document.getElementById('metTotalPallets').textContent = ultimoResultadoPallets.length;
+        document.getElementById('metTotalCaixas').textContent = `${totalCx.toLocaleString('pt-BR')} cx`;
+        document.getElementById('metTotalPecas').textContent = `${totalPc.toLocaleString('pt-BR')} pçs`;
+
+        const containerPallets = document.getElementById('listaPalletsRender');
+        containerPallets.innerHTML = '';
+
+        ultimoResultadoPallets.forEach((p, idx) => {
+            const numP = idx + 1;
+            const linhasP = ultimoResultadoLinhas.filter(r => r.Pallet_Num === numP);
+            const totalCxP = linhasP.reduce((acc, r) => acc + r.Qtd_Caixas, 0);
+            const altP = p.camadas.length;
+
+            const rowsHtml = linhasP.map(r => `
+                <tr>
+                    <td class="text-center">${r.Fileira}</td>
+                    <td class="text-center"><b>${r.SKU}</b></td>
+                    <td>${r.Produto}</td>
+                    <td class="text-center">${r.Caixa_Num}</td>
+                    <td class="text-center">${r.Qtd_Caixas}</td>
+                    <td class="text-center">${r.Altura}</td>
+                    <td class="text-center">${r.Cx_Fileira}</td>
+                    <td class="text-center">${r.Status_Fileira}</td>
+                </tr>
+            `).join('');
+
+            containerPallets.innerHTML += `
+                <div class="pallet-card">
+                    <div class="pallet-header">
+                        <span>📦 Pallet ${numP} - ${p.tipo}</span>
+                        <span>📐 Altura: ${altP} fileiras</span>
+                    </div>
+                    <div class="pallet-body">
+                        <p class="pallet-obs">Orientação: ${p.obs}</p>
+                        <div style="overflow-x: auto;">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="text-center">Fileira</th>
+                                        <th class="text-center">SKU</th>
+                                        <th>Produto</th>
+                                        <th class="text-center">Caixa Nº</th>
+                                        <th class="text-center">Qtd Caixas</th>
+                                        <th class="text-center">Altura</th>
+                                        <th class="text-center">Cx / Fileira</th>
+                                        <th class="text-center">Status Fileira</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rowsHtml}</tbody>
+                            </table>
+                        </div>
+                        <div class="total-box-container">
+                            <div class="total-card">📐 Altura: <b>${altP} fileiras</b></div>
+                            <div class="total-card">📦 Total de Caixas no Pallet ${numP}: <b>${totalCxP} cx</b></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+
+        document.getElementById('areaResultados').style.display = 'block';
+        document.getElementById('areaResultados').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    // --- EXPORTAÇÃO EXCEL ESTILIZADO (ExcelJS) ---
+    async function baixarExcelModelo() {
+        const workbook = new ExcelJS.Workbook();
+        const ws = workbook.addWorksheet('Paletização');
+
+        const PALETA_CORES = ["E2EFDA", "D9E1F2", "FCE4D6", "FFF2CC", "EDEDED", "DDEBF7", "EAE8FE"];
+        const headers = ["Pallet", "SKU", "Produto", "Caixa Nº", "Qtd Caixas", "Altura", "Fileira", "Status"];
+
+        ws.getRow(1).height = 28;
+        headers.forEach((h, i) => {
+            const cell = ws.getCell(1, i + 1);
+            cell.value = h;
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF00' } };
+            cell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF000000' } };
+            cell.alignment = { horizontal: 'center', vertical: 'center', wrapText: true };
+            cell.border = {
+                top: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' },
+                bottom: { style: 'double' }
+            };
+        });
+
+        // Agrupa exatamente como no Python (Pallet_Num, SKU, Produto, Caixa Nº, Altura, Status Fileira)
+        const gruposMap = new Map();
+        ultimoResultadoLinhas.forEach(r => {
+            const chave = `${r.Pallet_Num}|${r.SKU}|${r.Produto}|${r.Caixa_Num}|${r.Altura}|${r.Status_Fileira}`;
+            if (!gruposMap.has(chave)) {
+                gruposMap.set(chave, {
+                    Pallet_Num: r.Pallet_Num,
+                    SKU: r.SKU,
+                    Produto: r.Produto,
+                    Caixa_Num: r.Caixa_Num,
+                    Altura: r.Altura,
+                    Status_Fileira: r.Status_Fileira,
+                    Qtd_Caixas: 0,
+                    Fileiras: []
+                });
+            }
+            const g = gruposMap.get(chave);
+            g.Qtd_Caixas += r.Qtd_Caixas;
+            g.Fileiras.push(r.Fileira);
+        });
+
+        const listaAgrupada = Array.from(gruposMap.values()).sort((a, b) => {
+            if (a.Pallet_Num !== b.Pallet_Num) return a.Pallet_Num - b.Pallet_Num;
+            if (a.Caixa_Num !== b.Caixa_Num) return a.Caixa_Num - b.Caixa_Num;
+            return a.SKU.localeCompare(b.SKU);
+        });
+
+        // Separa por Pallet_Num para aplicar cores e mesclar coluna A
+        const porPallet = {};
+        listaAgrupada.forEach(item => {
+            if (!porPallet[item.Pallet_Num]) porPallet[item.Pallet_Num] = [];
+            porPallet[item.Pallet_Num].push(item);
+        });
+
+        let linhaAtual = 2;
+        const palletNums = Object.keys(porPallet).map(Number).sort((a, b) => a - b);
+
+        palletNums.forEach((palNum, idxPal) => {
+            const grupo = porPallet[palNum];
+            const corHex = 'FF' + PALETA_CORES[idxPal % PALETA_CORES.length];
+            const inicioLinha = linhaAtual;
+            const fimLinha = linhaAtual + grupo.length - 1;
+
+            grupo.forEach(row => {
+                ws.getRow(linhaAtual).height = 20;
+                const valores = [
+                    palNum,
+                    row.SKU,
+                    row.Produto,
+                    row.Caixa_Num,
+                    row.Qtd_Caixas,
+                    row.Altura,
+                    row.Fileiras.join(', '),
+                    row.Status_Fileira
+                ];
+
+                valores.forEach((val, colIdx) => {
+                    const c = ws.getCell(linhaAtual, colIdx + 1);
+                    c.value = val;
+                    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: corHex } };
+                    c.font = { name: 'Calibri', size: 10 };
+                    c.border = {
+                        top: { style: 'thin' }, left: { style: 'thin' },
+                        right: { style: 'thin' }, bottom: { style: 'thin' }
+                    };
+                    c.alignment = {
+                        horizontal: [0, 1, 3, 4, 5, 7].includes(colIdx) ? 'center' : 'left',
+                        vertical: 'center'
+                    };
+                });
+
+                linhaAtual++;
+            });
+
+            if (grupo.length > 1) {
+                ws.mergeCells(inicioLinha, 1, fimLinha, 1);
+                const cellMesclada = ws.getCell(inicioLinha, 1);
+                cellMesclada.alignment = { horizontal: 'center', vertical: 'center' };
+                cellMesclada.font = { name: 'Calibri', size: 11, bold: true };
+            } else {
+                ws.getCell(inicioLinha, 1).font = { name: 'Calibri', size: 10, bold: true };
+            }
+        });
+
+        ws.columns = [
+            { width: 10 }, { width: 18 }, { width: 42 }, { width: 12 },
+            { width: 14 }, { width: 10 }, { width: 28 }, { width: 22 }
+        ];
+
+        const buffer = await workbook.xlsx.writeBuffer();
+        const nomeCli = (document.getElementById('nomeCliente').value.trim() || 'PEDIDO').replace(/[\\/*?:"<>|]/g, '');
+        const dataStr = new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
+        saveAs(new Blob([buffer]), `PALETIZACAO_${nomeCli}_${dataStr}.xlsx`);
+    }
+
+    // --- EXPORTAÇÃO PDF OPERACIONAL (jsPDF) ---
+    function baixarPdfOperacional() {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+
+        const cli = document.getElementById('nomeCliente').value.trim() || 'Não Informado';
+        const dataHora = new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(16);
+        doc.text("MUSTAD - Relatório de Paletização", 105, 15, { align: "center" });
+
+        doc.setFontSize(10);
+        doc.text(`Cliente: ${cli}`, 105, 22, { align: "center" });
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        doc.text(`Emissão: ${dataHora}`, 105, 27, { align: "center" });
+
+        const totalPallets = ultimoResultadoPallets.length;
+        const totalCx = ultimoResultadoLinhas.reduce((acc, r) => acc + r.Qtd_Caixas, 0);
+        const totalPc = ultimoResultadoLinhas.reduce((acc, r) => acc + r.Total_Pecas, 0);
+
+        doc.setFillColor(0, 85, 184);
+        doc.rect(14, 32, 182, 9, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(11);
+        doc.text(`CARGA TOTAL: ${totalPallets} PALLETS | ${totalCx} CAIXAS | ${totalPc} PEÇAS`, 105, 38, { align: "center" });
+
+        doc.setTextColor(0, 0, 0);
+        let yAtual = 48;
+
+        ultimoResultadoPallets.forEach((p, idx) => {
+            const numP = idx + 1;
+            const linhasP = ultimoResultadoLinhas.filter(r => r.Pallet_Num === numP);
+            const cxPallet = linhasP.reduce((acc, r) => acc + r.Qtd_Caixas, 0);
+            const altPallet = p.camadas.length;
+
+            if (yAtual + (linhasP.length * 7) + 25 > 280) {
+                doc.addPage();
+                yAtual = 18;
+            }
+
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(10);
+            doc.text(`Pallet ${numP} - Altura do Pallet: ${altPallet} fileiras - ${p.tipo}`, 14, yAtual);
+            yAtual += 3;
+
+            doc.autoTable({
+                startY: yAtual,
+                head: [["Fileira", "SKU", "Produto", "Nº Cx", "Qtd Cx", "Altura", "Status"]],
+                body: linhasP.map(r => [
+                    r.Fileira, r.SKU, r.Produto.substring(0, 38),
+                    r.Caixa_Num, r.Qtd_Caixas, r.Altura, r.Status_Fileira
+                ]),
+                theme: 'grid',
+                styles: { fontSize: 8, cellPadding: 1.8, halign: 'center' },
+                columnStyles: { 2: { halign: 'left' } },
+                headStyles: { fillColor: [230, 230, 230], textColor: [0, 0, 0], fontStyle: 'bold' },
+                margin: { left: 14, right: 14 }
+            });
+
+            yAtual = doc.lastAutoTable.finalY + 5;
+            doc.setFont("helvetica", "bold");
+            doc.setFontSize(9);
+            doc.text(`Total de Caixas no Pallet ${numP}: ${cxPallet} cx  |  Altura: ${altPallet} fileiras`, 196, yAtual, { align: "right" });
+            yAtual += 9;
+        });
+
+        const nomeCli = (document.getElementById('nomeCliente').value.trim() || 'PEDIDO').replace(/[\\/*?:"<>|]/g, '');
+        const dataStr = new Date().toLocaleDateString('pt-BR').replace(/\//g, '-');
+        doc.save(`PALETIZACAO_${nomeCli}_${dataStr}.pdf`);
+    }
+</script>
+</body>
+</html>
