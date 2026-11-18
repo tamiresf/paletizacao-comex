@@ -213,7 +213,6 @@ nome_cliente = st.text_input("Identificação do Pedido / Cliente:", placeholder
 if st.session_state.carrinho:
     st.subheader("🛒 Itens Carregados no Pedido")
 
-    # Alerta de confirmação caso o operador tenha clicado na lixeira
     if st.session_state.sku_para_excluir is not None:
         idx_del = st.session_state.sku_para_excluir
         if 0 <= idx_del < len(st.session_state.carrinho):
@@ -232,7 +231,6 @@ if st.session_state.carrinho:
         else:
             st.session_state.sku_para_excluir = None
 
-    # Cabeçalho da Tabela
     c_h1, c_h2, c_h3, c_h4, c_h5, c_h6, c_h7 = st.columns([1.8, 4.2, 1.2, 1.3, 1.5, 1.0, 0.8])
     c_h1.markdown("**SKU**")
     c_h2.markdown("**Produto**")
@@ -242,7 +240,6 @@ if st.session_state.carrinho:
     c_h6.markdown("**Altura**")
     c_h7.markdown("**Ação**")
 
-    # Linhas dos itens com botão de lixeira individual
     for i, it in enumerate(st.session_state.carrinho):
         c1, c2, c3, c4, c5, c6, c7 = st.columns([1.8, 4.2, 1.2, 1.3, 1.5, 1.0, 0.8])
         c1.write(it["SKU"])
@@ -261,24 +258,24 @@ if st.session_state.carrinho:
         st.session_state.sku_para_excluir = None
         st.rerun()
 
-# --- MOTOR DE REGRAS DE PALETIZAÇÃO ---
+# --- MOTOR DE REGRAS DE PALETIZAÇÃO (MÁX. 2 SKUS POR PALLET ATÉ O FINAL) ---
 def otimizar_paletizacao(itens_pedido):
     pallets = []
-    itens = sorted(itens_pedido, key=lambda x: (x["Familia"], x["Nº Caixa"], x["SKU"]))
-    
-    pool_fileiras = []
+    itens = sorted(itens_pedido, key=lambda x: (x["Nº Caixa"], x["Familia"], x["SKU"]))
+
+    sobras_fileiras_sku = []
     caixas_soltas = []
-    
+
     # 1. Pallets Fechados de SKU Único
     for it in itens:
         cap = it["Capacidade_Pallet"]
         cpf = it["Caixas_Por_Fileira"]
         h_max = it["Altura"]
         qtd = it["Qtd_Caixas"]
-        
+
         pallets_fechados = qtd // cap
         sobra_caixas = qtd % cap
-        
+
         for _ in range(pallets_fechados):
             pallets.append({
                 "tipo": "Pallet Fechado (SKU Único)",
@@ -286,16 +283,16 @@ def otimizar_paletizacao(itens_pedido):
                 "camadas": [{"tipo_cx": it["Nº Caixa"], "itens": {it["SKU"]: cpf}, "completa": True} for _ in range(h_max)],
                 "obs": "Pallet 100% ocupado por um único SKU."
             })
-            
+
         fil_completas, resto = divmod(sobra_caixas, cpf)
-        for _ in range(fil_completas):
-            pool_fileiras.append({
+        if fil_completas > 0:
+            sobras_fileiras_sku.append({
                 "sku": it["SKU"],
                 "tipo_cx": it["Nº Caixa"],
                 "familia": it["Familia"],
                 "h_max": h_max,
                 "cpf": cpf,
-                "itens": {it["SKU"]: cpf}
+                "qtd_fil": fil_completas
             })
         if resto > 0:
             caixas_soltas.append({
@@ -306,22 +303,116 @@ def otimizar_paletizacao(itens_pedido):
                 "cpf": cpf,
                 "qtd": resto
             })
-            
-    # 2. Consolidação de Caixas Soltas em Fileiras Mistas
+
+    # 2. Pallets Fechados de até 2 SKUs (Mesmo Tipo de Caixa, Fileiras Completas)
+    tipos_presentes = sorted(set(s["tipo_cx"] for s in sobras_fileiras_sku), reverse=True)
+    for t in tipos_presentes:
+        while True:
+            candidatos = [s for s in sobras_fileiras_sku if s["tipo_cx"] == t and s["qtd_fil"] > 0]
+            if len(candidatos) < 2:
+                break
+            candidatos.sort(key=lambda x: (-x["qtd_fil"], -x["h_max"], x["sku"]))
+            s1 = candidatos[0]
+
+            melhor_par = None
+            for s2 in candidatos[1:]:
+                lim_h = min(s1["h_max"], s2["h_max"])
+                if s1["qtd_fil"] + s2["qtd_fil"] >= lim_h:
+                    sobra_par = (s1["qtd_fil"] + s2["qtd_fil"]) - lim_h
+                    score = (-lim_h, sobra_par)
+                    if melhor_par is None or score < melhor_par[0]:
+                        melhor_par = (score, s2, lim_h)
+
+            if melhor_par is None:
+                break
+
+            _, s2, lim_h = melhor_par
+            usar_s1 = min(s1["qtd_fil"], lim_h - 1)
+            usar_s2 = lim_h - usar_s1
+
+            camadas = []
+            for _ in range(usar_s1):
+                camadas.append({"tipo_cx": t, "itens": {s1["sku"]: s1["cpf"]}, "completa": True})
+            for _ in range(usar_s2):
+                camadas.append({"tipo_cx": t, "itens": {s2["sku"]: s2["cpf"]}, "completa": True})
+
+            s1["qtd_fil"] -= usar_s1
+            s2["qtd_fil"] -= usar_s2
+
+            pallets.append({
+                "tipo": "Pallet Fechado (2 SKUs - Mesma Caixa)",
+                "limite_fileiras": lim_h,
+                "camadas": camadas,
+                "obs": f"Otimizado com apenas 2 SKUs ({s1['sku']} e {s2['sku']}) para agilizar a separação."
+            })
+
+    # 3. Pallets Fechados de até 2 SKUs (Caixas Diferentes por Fileira Inteira)
+    while True:
+        candidatos = [s for s in sobras_fileiras_sku if s["qtd_fil"] > 0]
+        if len(candidatos) < 2:
+            break
+        candidatos.sort(key=lambda x: (-x["qtd_fil"], -x["tipo_cx"], x["sku"]))
+        s1 = candidatos[0]
+
+        melhor_par = None
+        for s2 in candidatos[1:]:
+            lim_h = min(s1["h_max"], s2["h_max"])
+            if s1["qtd_fil"] + s2["qtd_fil"] >= lim_h:
+                sobra_par = (s1["qtd_fil"] + s2["qtd_fil"]) - lim_h
+                score = (-lim_h, sobra_par)
+                if melhor_par is None or score < melhor_par[0]:
+                    melhor_par = (score, s2, lim_h)
+
+        if melhor_par is None:
+            break
+
+        _, s2, lim_h = melhor_par
+        usar_s1 = min(s1["qtd_fil"], lim_h - 1)
+        usar_s2 = lim_h - usar_s1
+
+        par_ordenado = sorted(
+            [(s1, usar_s1), (s2, usar_s2)],
+            key=lambda item: -item[0]["tipo_cx"]
+        )
+        camadas = []
+        for s_item, qtd_usar in par_ordenado:
+            for _ in range(qtd_usar):
+                camadas.append({"tipo_cx": s_item["tipo_cx"], "itens": {s_item["sku"]: s_item["cpf"]}, "completa": True})
+
+        s1["qtd_fil"] -= usar_s1
+        s2["qtd_fil"] -= usar_s2
+
+        pallets.append({
+            "tipo": "Pallet Fechado (2 SKUs - Caixas Mistas)",
+            "limite_fileiras": lim_h,
+            "camadas": camadas,
+            "obs": f"Otimizado com apenas 2 SKUs ({s1['sku']} e {s2['sku']}) em fileiras completas."
+        })
+
+    # 4. Consolidação Final (3+ SKUs concentrados apenas nos últimos pallets)
+    pool_residual = []
+    for s in sobras_fileiras_sku:
+        for _ in range(s["qtd_fil"]):
+            pool_residual.append({
+                "tipo_cx": s["tipo_cx"],
+                "h_max": s["h_max"],
+                "itens": {s["sku"]: s["cpf"]},
+                "completa": True
+            })
+
     soltas_agrupadas = {}
     for cs in caixas_soltas:
-        t = cs["tipo_cx"]
-        soltas_agrupadas.setdefault(t, []).append(cs)
-        
-    for t, lista_cs in soltas_agrupadas.items():
-        if not lista_cs:
-            continue
+        soltas_agrupadas.setdefault(cs["tipo_cx"], []).append(cs)
+
+    soltas_finais = []
+    for t in sorted(soltas_agrupadas.keys(), reverse=True):
+        lista_cs = soltas_agrupadas[t]
         cpf = lista_cs[0]["cpf"]
-        lista_cs.sort(key=lambda x: (-x["h_max"], x["familia"]))
-        
+        lista_cs.sort(key=lambda x: (-x["h_max"], x["sku"]))
+
         camada_temp = {}
         soma = 0
-        min_h = 6
+        min_h = 99
         for c in lista_cs:
             while c["qtd"] > 0:
                 espaco = cpf - soma
@@ -331,108 +422,66 @@ def otimizar_paletizacao(itens_pedido):
                 soma += pegar
                 min_h = min(min_h, c["h_max"])
                 if soma == cpf:
-                    pool_fileiras.append({
-                        "sku": None,
+                    pool_residual.append({
                         "tipo_cx": t,
-                        "familia": "Mista",
                         "h_max": min_h,
-                        "cpf": cpf,
-                        "itens": camada_temp
+                        "itens": camada_temp,
+                        "completa": True
                     })
                     camada_temp = {}
                     soma = 0
-                    min_h = 6
+                    min_h = 99
         if camada_temp:
-            for s, q in camada_temp.items():
-                ref = next((x for x in lista_cs if x["sku"] == s), None)
-                if ref:
-                    ref["qtd"] = q
-                
-    # 3. Pallets de Sobras com Fileiras Completas (Mesmo Tipo de Caixa)
-    tipos_presentes = sorted(set(f["tipo_cx"] for f in pool_fileiras), reverse=True)
-    
-    for t in tipos_presentes:
-        fils_t = [f for f in pool_fileiras if f["tipo_cx"] == t]
-        if not fils_t:
-            continue
-            
-        alturas = sorted(set(f["h_max"] for f in fils_t), reverse=True)
-        for h in alturas:
-            iguais = [f for f in fils_t if f["h_max"] == h]
-            while len(iguais) >= h:
-                lote = iguais[:h]
-                for x in lote:
-                    fils_t.remove(x)
-                    pool_fileiras.remove(x)
-                pallets.append({
-                    "tipo": "Pallet Fechado (Mesma Caixa e Mesma Altura)",
-                    "limite_fileiras": h,
-                    "camadas": [{"tipo_cx": t, "itens": f["itens"], "completa": True} for f in lote],
-                    "obs": "Composto por fileiras completas da mesma caixa e mesma altura."
-                })
-                iguais = [f for f in fils_t if f["h_max"] == h]
-                
-        while fils_t:
-            alturas_disponiveis = [f["h_max"] for f in fils_t]
-            lim_h = min(alturas_disponiveis)
-            if len(fils_t) >= lim_h:
-                lote = fils_t[:lim_h]
-                for x in lote:
-                    fils_t.remove(x)
-                    pool_fileiras.remove(x)
-                pallets.append({
-                    "tipo": "Pallet Fechado (Mesma Caixa, Alturas Mistas)",
-                    "limite_fileiras": lim_h,
-                    "camadas": [{"tipo_cx": t, "itens": f["itens"], "completa": True} for f in lote],
-                    "obs": f"Limite respeitado de {lim_h} fileiras máximas."
-                })
-            else:
-                break
+            soltas_finais.append({
+                "tipo_cx": t,
+                "h_max": min_h,
+                "itens": camada_temp,
+                "completa": False
+            })
 
-    # 4. Combinação de Diferentes Tipos de Caixa
-    while len(pool_fileiras) >= 4:
-        alturas_candidatas = [f["h_max"] for f in pool_fileiras[:4]]
-        h_lim = min(alturas_candidatas)
-        if len(pool_fileiras) >= h_lim:
-            lote = pool_fileiras[:h_lim]
-            lote.sort(key=lambda x: -x["tipo_cx"])
-            for x in lote:
-                pool_fileiras.remove(x)
+    pool_residual.sort(key=lambda x: (-x["tipo_cx"], -x["h_max"]))
+
+    # Se as sobras ultrapassarem o limite de altura de um único pallet, fecha pallet(s) residual(is) antes do último
+    while pool_residual:
+        todas_h = [f["h_max"] for f in pool_residual] + [sf["h_max"] for sf in soltas_finais]
+        lim_h = min(todas_h)
+        if len(pool_residual) + len(soltas_finais) > lim_h:
+            qtd_pegar = min(len(pool_residual), lim_h)
+            lote = pool_residual[:qtd_pegar]
+            pool_residual = pool_residual[qtd_pegar:]
             pallets.append({
-                "tipo": "Pallet Fechado (Caixas Mistas por Fileira Inteira)",
-                "limite_fileiras": h_lim,
+                "tipo": "Pallet Residual Fechado (Múltiplos SKUs)",
+                "limite_fileiras": len(lote),
                 "camadas": [{"tipo_cx": f["tipo_cx"], "itens": f["itens"], "completa": True} for f in lote],
-                "obs": "Fileiras completas de diferentes caixas combinadas."
+                "obs": "Consolidação final de sobras antes do último pallet."
             })
         else:
             break
 
-    # 5. Fechamento do Pallet Final
-    soltas_finais = [cs for cs in caixas_soltas if cs.get("qtd", 0) > 0]
-    
-    if pool_fileiras or soltas_finais:
+    # 5. Último Pallet (concentra o máximo possível das sobras e SKUs finais)
+    if pool_residual or soltas_finais:
         camadas_final = []
-        for f in pool_fileiras:
+        for f in pool_residual:
             camadas_final.append({"tipo_cx": f["tipo_cx"], "itens": f["itens"], "completa": True})
-            
-        if soltas_finais:
-            itens_inc = {cs["sku"]: cs["qtd"] for cs in soltas_finais}
-            camadas_final.append({"tipo_cx": soltas_finais[0]["tipo_cx"], "itens": itens_inc, "completa": False})
-            
+
+        soltas_finais.sort(key=lambda x: -x["tipo_cx"])
+        for sf in soltas_finais:
+            camadas_final.append({"tipo_cx": sf["tipo_cx"], "itens": sf["itens"], "completa": False})
+
         if len(camadas_final) < 2 and pallets:
             doador = pallets[-1]
             if len(doador.get("camadas", [])) > 2:
                 camada_movida = doador["camadas"].pop()
                 camadas_final.insert(0, camada_movida)
                 doador["obs"] += " (1 fileira transferida para o último pallet para cumprir o mínimo de 2 fileiras)."
-                
+
         pallets.append({
-            "tipo": "Último Pallet (Sobras / Fileira Incompleta)",
+            "tipo": "Último Pallet (Consolidação de Sobras)",
             "limite_fileiras": len(camadas_final),
             "camadas": camadas_final,
-            "obs": "Contém sobras finais de exportação e fileiras residuais."
+            "obs": "Concentra as sobras finais e múltiplos SKUs para facilitar a separação dos demais pallets."
         })
-        
+
     return pallets
 
 # --- CONVERSÃO PARA RELATÓRIO OPERACIONAL ---
