@@ -400,7 +400,7 @@ def otimizar_paletizacao(itens_pedido):
             s1["qtd"] -= usar_s1
             s2["qtd"] -= usar_s2
 
-    # 4. Consolidação Final por Mesmo Número de Caixa (evita desperdiçar capacidade de pallets intermediários)
+    # 4. Consolidação Final por Mesmo Número de Caixa
     restantes = [s for s in sobras_por_sku if s["qtd"] > 0]
     restantes.sort(key=lambda x: (-x["tipo_cx"], -x["qtd"], x["sku"]))
 
@@ -435,41 +435,53 @@ def otimizar_paletizacao(itens_pedido):
             })
             total_cx_grupo = sum(r["qtd"] for r in grupo_t)
 
-    # 5. Últimos Pallets (Sobras Finais que não fecharam 1 pallet inteiro do mesmo tipo de caixa)
+    # 5. Fechamento dos Últimos Pallets (Penúltimo 100% fileiras completas; incompletas só no Último)
     sobras_finais = [r for r in restantes if r["qtd"] > 0]
     sobras_finais.sort(key=lambda x: (-x["tipo_cx"], -x["qtd"], x["sku"]))
 
     if sobras_finais:
-        camadas_residuais = []
+        camadas_completas = []
+        camadas_incompletas = []
+
         for t in sorted(set(r["tipo_cx"] for r in sobras_finais), reverse=True):
             itens_t = [(r["sku"], r["qtd"]) for r in sobras_finais if r["tipo_cx"] == t]
             cpf_t = next(r["cpf"] for r in sobras_finais if r["tipo_cx"] == t)
-            camadas_residuais.extend(_montar_camadas_por_skus(itens_t, t, cpf_t))
+            for camada in _montar_camadas_por_skus(itens_t, t, cpf_t):
+                if camada["completa"]:
+                    camadas_completas.append(camada)
+                else:
+                    camadas_incompletas.append(camada)
 
+        # Garante que os pallets anteriores ao último recebam APENAS fileiras completas
         limite_final = 5
-        while len(camadas_residuais) > limite_final:
-            lote = camadas_residuais[:limite_final]
-            camadas_residuais = camadas_residuais[limite_final:]
+        while len(camadas_completas) > limite_final or (
+            len(camadas_completas) + len(camadas_incompletas) > limite_final and len(camadas_completas) >= 2
+        ):
+            qtd_pegar = min(len(camadas_completas), limite_final)
+            lote = camadas_completas[:qtd_pegar]
+            camadas_completas = camadas_completas[qtd_pegar:]
             pallets.append({
-                "tipo": "Pallet Consolidado Final (Múltiplos SKUs)",
+                "tipo": "Pallet Consolidado Final (Fileiras Completas)",
                 "limite_fileiras": len(lote),
                 "camadas": lote,
-                "obs": "Consolidação das sobras finais antes do último pallet."
+                "obs": "Composto exclusivamente por fileiras completas antes do último pallet."
             })
 
-        if camadas_residuais:
-            if len(camadas_residuais) < 2 and pallets:
+        # Último pallet recebe as fileiras completas restantes + todas as fileiras incompletas no topo
+        camadas_ultimo = camadas_completas + camadas_incompletas
+        if camadas_ultimo:
+            if len(camadas_ultimo) < 2 and pallets:
                 doador = pallets[-1]
                 if len(doador.get("camadas", [])) > 2:
                     camada_movida = doador["camadas"].pop()
-                    camadas_residuais.insert(0, camada_movida)
-                    doador["obs"] += " (1 fileira transferida para o último pallet para cumprir o mínimo de 2 fileiras)."
+                    camadas_ultimo.insert(0, camada_movida)
+                    doador["obs"] += " (1 fileira completa transferida para o último pallet para cumprir o mínimo de 2 fileiras)."
 
             pallets.append({
                 "tipo": "Último Pallet (Consolidação de Sobras)",
-                "limite_fileiras": len(camadas_residuais),
-                "camadas": camadas_residuais,
-                "obs": "Concentra as sobras finais de exportação."
+                "limite_fileiras": len(camadas_ultimo),
+                "camadas": camadas_ultimo,
+                "obs": "Concentra as sobras finais e eventuais fileiras incompletas no topo."
             })
 
     return pallets
